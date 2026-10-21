@@ -1,10 +1,11 @@
-/* Inventory Scanner front end. Plain JS, no build step.
+/* Vortex Inventory front end. Plain JS, no build step.
    Talks to apps-script/Code.gs with JSON POSTs. See README.md. */
 (function () {
   'use strict';
 
   var cfg = window.APP_CONFIG || {};
   var SESSION_KEY = 'inventory-scanner.session';
+  var CAMERA_KEY = 'inventory-scanner.camera';
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -20,7 +21,8 @@
     edit: '<svg class="i" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
     trash: '<svg class="i" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>',
     box: '<svg class="i" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg>',
-    chev: '<svg class="i chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>'
+    chev: '<svg class="i chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>',
+    scan: '<svg class="i" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>'
   };
 
   var FLOWS = {
@@ -29,9 +31,9 @@
     in: { action: 'MASUK', title: 'Keranjang Barang Masuk/Kembali', unit: 'unit' },
     group: { action: null, title: 'Keranjang Pengelompokan', unit: 'aset' }
   };
-  var PAGE_TITLES = { home: 'Dashboard', scan: 'Scan & Keranjang', inventory: 'Data Inventory', containers: 'Manajemen Kabinet & Box', history: 'Riwayat', labels: 'Cetak QR Code' };
   var FLOW_NAMES = { check: 'Pengecekan Kondisi', out: 'Barang Keluar', in: 'Barang Masuk/Kembali', group: 'Kelompokkan ke Kabinet/Box' };
-  var lastRefresh = 0;
+  var PAGE_TITLES = { home: 'Dashboard', scan: 'Scan & Keranjang', inventory: 'Data Inventory', containers: 'Manajemen Kabinet & Box', history: 'Riwayat', labels: 'Cetak QR Code' };
+  var ACTION_LABEL = { KELUAR: 'Keluar', MASUK: 'Masuk', INSPEKSI: 'Pengecekan', KELOMPOK: 'Kelompok', LEPAS: 'Lepas', IMPORT: 'Didaftarkan', EDIT: 'Edit', NONAKTIF: 'Nonaktif' };
   var TYPE_LABELS = {
     'MODUL': 'Modul LED', 'BOX': 'Box / Case', 'POWER SUPPLY': 'Power Supply', 'MOBO': 'MOBO', 'BRACKET': 'Bracket',
     'POWER PANEL LISTRIK 3 PHASE': 'Power Panel Listrik 3 Phase', 'PROSESSOR': 'Prosessor', 'LIGHTING': 'Lighting',
@@ -46,12 +48,16 @@
   var state = { me: null, items: [], containers: [], stats: {}, transactions: [], types: Object.keys(TYPE_LABELS) };
   var session = null;
   var carts = { check: [], out: [], in: [], group: [] };
+  var drafts = {};
   var pendingBatch = {};
   var flow = 'check';
   var groupTarget = '';
   var page = 'home';
-  var scanner = null, cameraOn = false, lastCode = '', lastAt = 0;
+  var inventoryFilter = '';
+  var scanner = null, cameraOn = false, lastCode = '', lastAt = 0, lookupScanner = null;
   var labelSelected = {};
+  var lastRefresh = 0;
+  var audio = null;
 
   // ---------- small UI helpers ----------
 
@@ -69,12 +75,37 @@
   }
   function buzz(ok) {
     if (navigator.vibrate) { try { navigator.vibrate(ok ? 60 : [60, 60, 60]); } catch (e) { /* ignore */ } }
+    beep(ok);
+  }
+  // A short tone besides the vibration: warehouses are loud and the phone is not always in a hand.
+  function ensureAudio() {
+    if (audio) return;
+    try { var Ctx = window.AudioContext || window.webkitAudioContext; if (Ctx) audio = new Ctx(); } catch (e) { audio = null; }
+  }
+  function beep(ok) {
+    if (!audio) return;
+    try {
+      if (audio.state === 'suspended') audio.resume();
+      var t = audio.currentTime;
+      var tones = ok ? [[1046, 0, .07]] : [[330, 0, .09], [330, .12, .09]];
+      tones.forEach(function (tone) {
+        var o = audio.createOscillator(), g = audio.createGain();
+        o.type = 'sine'; o.frequency.value = tone[0];
+        g.gain.setValueAtTime(0.0001, t + tone[1]);
+        g.gain.exponentialRampToValueAtTime(0.25, t + tone[1] + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + tone[1] + tone[2]);
+        o.connect(g); g.connect(audio.destination);
+        o.start(t + tone[1]); o.stop(t + tone[1] + tone[2] + 0.02);
+      });
+    } catch (e) { /* no sound, fine */ }
   }
   function uuid() {
     if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
     return 'b-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
   }
   function today() { return new Date().toLocaleDateString('en-CA'); }
+  function hhmm(s) { var m = /(\d\d):(\d\d)/.exec(String(s || '')); return m ? m[1] + ':' + m[2] : ''; }
+  function shortDate(s) { return String(s || '').slice(0, 10); }
   function show(viewId) {
     ['setupView', 'loginView', 'appView'].forEach(function (id) { $(id).classList.toggle('hidden', id !== viewId); });
     document.body.classList.toggle('has-nav', viewId === 'appView');
@@ -112,13 +143,20 @@
     }
   }
 
-  function openDialog(html) {
+  function openDialog(html, onClose) {
     var d = $('dlg');
     d.innerHTML = '<div class="box">' + html + '</div>';
+    d._onClose = onClose || null;
     if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', '');
     return d;
   }
-  function closeDialog() { var d = $('dlg'); if (d.open) d.close(); d.innerHTML = ''; }
+  function closeDialog() {
+    var d = $('dlg');
+    var fn = d._onClose; d._onClose = null;
+    if (d.open) d.close();
+    d.innerHTML = '';
+    if (fn) fn();
+  }
   function confirmDialog(title, text, okLabel, danger) {
     return new Promise(function (resolve) {
       var d = openDialog('<h2>' + esc(title) + '</h2><p>' + esc(text) + '</p>' +
@@ -200,9 +238,9 @@
 
   function init() {
     if (!cfg.apiUrl) { show('setupView'); return; }
-    $('loginTitle').textContent = cfg.appName || 'Inventory Scanner';
-    $('brandName').textContent = cfg.appName || 'Inventory Scanner';
-    document.title = cfg.appName || 'Inventory Scanner';
+    $('loginTitle').textContent = cfg.appName || 'Vortex Inventory';
+    $('brandName').textContent = cfg.appName || 'Vortex Inventory';
+    document.title = cfg.appName || 'Vortex Inventory';
     try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { session = null; }
     bindEvents();
     if (session && session.user && session.code) bootstrap();
@@ -240,18 +278,19 @@
 
   function showPage(name) {
     if (!$('page-' + name)) name = 'home';
-    if (page === 'scan' && name !== 'scan') stopCamera();
+    if (page === 'scan' && name !== 'scan') stopCamera(true);
     page = name;
     document.querySelectorAll('.page').forEach(function (p) { p.classList.toggle('active', p.id === 'page-' + name); });
     document.querySelectorAll('#nav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === name); });
     updateTitles();
     window.scrollTo(0, 0);
+    if (name === 'scan' && cameraWanted() && !cameraOn) startCamera();
   }
   function updateTitles() {
-    $('pageTitle').textContent = page === 'scan' ? FLOW_NAMES[flow] : (PAGE_TITLES[page] || page);
     var t = lastRefresh ? new Date(lastRefresh) : null;
     var stamp = t ? 'Diperbarui ' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) : '';
-    $('pageSub').textContent = page === 'scan' ? 'Scan QR, isi keranjang, simpan. Satu halaman.' : stamp;
+    $('pageTitle').textContent = page === 'scan' ? FLOW_NAMES[flow] : (PAGE_TITLES[page] || page);
+    $('pageSub').textContent = page === 'scan' ? 'Scan, isi keranjang, Simpan.' : stamp;
     document.querySelectorAll('#sidebar .navbtn').forEach(function (b) {
       b.classList.toggle('active', b.dataset.page === page && (!b.dataset.flow || b.dataset.flow === flow));
     });
@@ -261,11 +300,10 @@
     if (!FLOWS[name]) return;
     flow = name;
     document.querySelectorAll('#flowTabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.flow === name); });
-    ['check', 'out', 'in', 'group'].forEach(function (f) { $('form-' + f).classList.toggle('hidden', f !== name); });
     $('groupTargetWrap').classList.toggle('hidden', name !== 'group');
     $('groupPick').classList.toggle('hidden', name !== 'group');
-    $('saveBtn').textContent = name === 'group' ? 'Simpan anggota ke Kabinet / Box' : 'Simpan ' + (name === 'check' ? 'hasil pengecekan' : name === 'out' ? 'barang keluar' : 'barang masuk/kembali');
-    $('scanHeading').textContent = 'Scan QR \u2014 ' + FLOW_NAMES[name];
+    $('groupUnassign').classList.toggle('hidden', name !== 'group');
+    $('scanHeading').textContent = 'Scan QR — ' + FLOW_NAMES[name];
     updateTitles();
     renderCart();
     if (name === 'group') renderGroupPick();
@@ -280,23 +318,25 @@
     el.textContent = text;
     el.className = 'scanstatus' + (kind ? ' ' + kind : '');
   }
+  function cameraWanted() { try { return localStorage.getItem(CAMERA_KEY) === '1'; } catch (e) { return false; } }
+  function rememberCamera(on) { try { if (on) localStorage.setItem(CAMERA_KEY, '1'); else localStorage.removeItem(CAMERA_KEY); } catch (e) { /* ignore */ } }
+
+  function makeScanner(elementId) {
+    var formats = window.Html5QrcodeSupportedFormats ? [Html5QrcodeSupportedFormats.QR_CODE] : undefined;
+    return new Html5Qrcode(elementId, { verbose: false, formatsToSupport: formats, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+  }
+  var SCAN_CONFIG = { fps: 10, aspectRatio: 1, qrbox: function (w, h) { var s = Math.floor(Math.min(w, h) * 0.75); return { width: s, height: s }; } };
 
   function startCamera() {
     if (cameraOn) return;
     if (!window.Html5Qrcode) { scanStatus('Pustaka kamera tidak termuat. Muat ulang halaman.', 'err'); return; }
+    ensureAudio();
     scanStatus('Membuka kamera...');
     try {
-      if (!scanner) {
-        var formats = window.Html5QrcodeSupportedFormats ? [Html5QrcodeSupportedFormats.QR_CODE] : undefined;
-        scanner = new Html5Qrcode('reader', { verbose: false, formatsToSupport: formats, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
-      }
-      scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, aspectRatio: 1, qrbox: function (w, h) { var s = Math.floor(Math.min(w, h) * 0.75); return { width: s, height: s }; } },
-        onDecoded,
-        function () { /* no code in frame */ }
-      ).then(function () {
+      if (!scanner) scanner = makeScanner('reader');
+      scanner.start({ facingMode: 'environment' }, SCAN_CONFIG, onDecoded, function () { /* no code in frame */ }).then(function () {
         cameraOn = true;
+        rememberCamera(true);
         $('viewfinder').classList.add('on');
         $('camStart').disabled = true;
         scanStatus('Kamera aktif. Arahkan ke QR.', '');
@@ -305,12 +345,15 @@
   }
   function cameraFailed(err) {
     cameraOn = false;
+    rememberCamera(false);
     var msg = (err && err.message) || String(err || '');
     scanStatus('Kamera tidak bisa dibuka: ' + msg + '. Izinkan kamera untuk situs ini, pastikan alamat https, dan buka di Chrome/Safari, bukan di browser WhatsApp.', 'err');
   }
-  function stopCamera() {
+  /** keep=true leaves the "auto-start next time" preference alone (leaving the page); false forgets it (user pressed Hentikan). */
+  function stopCamera(keep) {
     $('camStart').disabled = false;
     $('viewfinder').classList.remove('on');
+    if (!keep) rememberCamera(false);
     if (!scanner || !cameraOn) return;
     cameraOn = false;
     scanner.stop().then(function () { scanner.clear(); }).catch(function () { /* already stopped */ });
@@ -336,16 +379,20 @@
     return { item: item, container: container, members: members };
   }
 
-  function handleCode(raw) {
-    var code = String(raw || '').trim();
-    if (!code) return Promise.resolve(false);
+  function resolveCode(code) {
     var hit = findLocal(code);
-    if (hit.item || hit.container) return Promise.resolve(addHit(hit, code));
+    if (hit.item || hit.container) return Promise.resolve(hit);
     return api('lookup', { code: code }, { silent: true }).then(function (d) {
       if (d.item && !state.items.some(function (x) { return x.id === d.item.id; })) state.items.push(d.item);
       if (d.container && !state.containers.some(function (c) { return c.cabinetId === d.container.cabinetId; })) state.containers.push(d.container);
-      return addHit({ item: d.item, container: d.container, members: d.members || [] }, code);
-    }).catch(function (e) {
+      return { item: d.item, container: d.container, members: d.members || [] };
+    });
+  }
+
+  function handleCode(raw) {
+    var code = String(raw || '').trim();
+    if (!code) return Promise.resolve(false);
+    return resolveCode(code).then(function (hit) { return addHit(hit, code); }).catch(function (e) {
       scanStatus('Tidak ditemukan: ' + code, 'err');
       buzz(false);
       toast(e.message, true);
@@ -365,7 +412,8 @@
         buzz(true); renderGroupPick(); return true;
       }
       if (!groupTarget) { scanStatus('Pilih atau scan kabinet/box tujuan dulu.', 'err'); buzz(false); return false; }
-      return pushCart(hit.item, 'group', '') ? (scanStatus('Masuk keranjang: ' + hit.item.id, 'ok'), buzz(true), true) : (scanStatus('Sudah ada di keranjang: ' + hit.item.id, 'err'), buzz(false), false);
+      if (pushCart(hit.item, 'group', '')) { scanStatus('Masuk keranjang: ' + hit.item.id, 'ok'); buzz(true); return true; }
+      scanStatus('Sudah ada di keranjang: ' + hit.item.id, 'err'); buzz(false); return false;
     }
     var added = 0, total = 0;
     if (hit.container) {
@@ -379,13 +427,15 @@
     scanStatus('Sudah ada di keranjang: ' + hit.item.id, 'err'); buzz(false); return false;
   }
 
+  /** Newest scan goes to the top of the cart so the operator sees it land. */
   function pushCart(item, f, cabinetId) {
     if (!item) return false;
     var cart = carts[f];
     for (var i = 0; i < cart.length; i++) if (cart[i].id === item.id) { if (cabinetId) cart[i]._cartCabinetId = cabinetId; return false; }
     var copy = {}; for (var k in item) copy[k] = item[k];
     copy._cartCabinetId = cabinetId || '';
-    cart.push(copy);
+    copy._at = Date.now();
+    cart.unshift(copy);
     renderCart();
     return true;
   }
@@ -402,52 +452,91 @@
     });
     var cart = carts[flow];
     $('cartTitle').textContent = FLOWS[flow].title + ' · ' + cart.length;
+    var byType = {};
+    cart.forEach(function (x) { byType[x.type] = (byType[x.type] || 0) + 1; });
+    $('cartSummary').textContent = cart.length ? Object.keys(byType).map(function (t) { return byType[t] + ' ' + typeLabel(t); }).join(' · ') : '';
+    $('saveBtn').disabled = !cart.length;
+    $('saveBtn').textContent = flow === 'group' ? 'Simpan ' + cart.length + ' aset ke wadah' : 'Simpan ' + cart.length + ' unit';
     if (!cart.length) { $('cartList').innerHTML = '<div class="empty">Belum ada barang. Scan QR, ketik ID, atau pilih dari daftar inventaris.</div>'; return; }
+    var now = Date.now();
     $('cartList').innerHTML = cart.map(function (x) {
       var cab = x._cartCabinetId || x.cabinetId;
-      return '<div class="item"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) +
+      var fresh = now - (x._at || 0) < 1500 ? ' new' : '';
+      return '<div class="item' + fresh + '"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) +
         ' ' + pillStatus(x.locationStatus) + (cab ? ' <span class="pill">' + esc(cab) + '</span>' : '') + '</div></div>' +
         '<div class="ops"><button class="btn secondary small" type="button" data-remove="' + esc(x.id) + '">Hapus</button></div></div>';
     }).join('');
   }
 
+  // ---------- saving: Simpan opens one sheet with the details and the confirm ----------
+
   function saveFlow() {
     var cart = carts[flow];
     if (!cart.length) { toast('Keranjang kosong. Scan atau pilih barang dulu.', true); return; }
     if (flow === 'group') return saveGroup('assign');
-    var payload = { action: FLOWS[flow].action, ids: cart.map(function (x) { return x.id; }), note: $('note-' + flow).value.trim() };
-    payload.cabinetIds = cart.map(function (x) { return x._cartCabinetId; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+    var dr = drafts[flow] || {};
+    var n = cart.length;
+    var fields = '';
     if (flow === 'check') {
-      payload.condition = $('condition').value;
-      payload.damageNote = $('damageNote').value.trim();
-      if (payload.condition === 'RUSAK' && !payload.damageNote) { toast('Keterangan kerusakan wajib diisi.', true); $('damageNote').focus(); return; }
+      fields = '<label>Hasil pemeriksaan *</label><select name="condition"><option value="BAIK"' + (dr.condition === 'BAIK' || !dr.condition ? ' selected' : '') + '>BAIK</option><option value="RUSAK"' + (dr.condition === 'RUSAK' ? ' selected' : '') + '>RUSAK</option></select>' +
+        '<div id="damageWrap"' + (dr.condition === 'RUSAK' ? '' : ' class="hidden"') + '><label>Keterangan kerusakan *</label><textarea name="damageNote" placeholder="Contoh: pixel mati, power tidak menyala, casing retak">' + esc(dr.damageNote || '') + '</textarea></div>' +
+        '<label>Catatan umum (opsional)</label><textarea name="note">' + esc(dr.note || '') + '</textarea>' +
+        '<p class="small muted" style="margin-top:10px">Hasil ini berlaku untuk semua ' + n + ' unit di keranjang.</p>';
     } else {
-      payload.eventDate = $('date-' + flow).value;
-      payload.location = $('location-' + flow).value.trim();
-      payload.eventName = $('event-' + flow).value.trim();
-      if (flow === 'in') payload.storeLocation = $('store-in').value.trim();
-      if (!payload.eventDate) { toast('Tanggal wajib diisi.', true); $('date-' + flow).focus(); return; }
-      if (!payload.location) { toast('Lokasi wajib diisi.', true); $('location-' + flow).focus(); return; }
+      var isOut = flow === 'out';
+      fields = '<div class="formgrid">' +
+        '<div><label>Tanggal *</label><input name="eventDate" type="date" value="' + esc(dr.eventDate || today()) + '"></div>' +
+        '<div><label>Nama acara / proyek</label><input name="eventName" value="' + esc(dr.eventName || '') + '" placeholder="Contoh: Konser / Seminar"></div>' +
+        '<div class="full"><label>' + (isOut ? 'Lokasi pemasangan / tujuan *' : 'Lokasi asal / acara *') + '</label><input name="location" value="' + esc(dr.location || '') + '" placeholder="' + (isOut ? 'Contoh: Ballroom Hotel ABC' : 'Contoh: Ballroom Hotel ABC') + '"></div>' +
+        (isOut ? '' : '<div class="full"><label>Disimpan di</label><input name="storeLocation" value="' + esc(dr.storeLocation || 'Gudang') + '" placeholder="Contoh: Gudang Kubik"></div>') +
+        '<div class="full"><label>Catatan umum (opsional)</label><textarea name="note">' + esc(dr.note || '') + '</textarea></div></div>';
     }
-    var what = flow === 'check' ? 'hasil pengecekan ' + payload.condition : (flow === 'out' ? 'barang keluar ke ' + payload.location : 'barang masuk dari ' + payload.location);
-    confirmDialog('Simpan ' + cart.length + ' unit?', 'Simpan ' + what + ' untuk ' + cart.length + ' unit.', 'Simpan').then(function (yes) {
-      if (!yes) return;
-      pendingBatch[flow] = pendingBatch[flow] || uuid();
-      api('commit', payload, { batchId: pendingBatch[flow], loadingText: 'Menyimpan ' + cart.length + ' unit...' }).then(function (d) {
-        delete pendingBatch[flow];
-        carts[flow] = [];
-        resetForm(flow);
-        applySnapshot(d);
-        toast(d.message || 'Tersimpan.');
-        scanStatus('Tersimpan. Siap scan berikutnya.', 'ok');
-      }).catch(function (e) {
-        if (e.invalid && e.invalid.length) {
-          var bad = {}; e.invalid.forEach(function (id) { bad[id.toLowerCase()] = true; });
-          carts[flow] = carts[flow].filter(function (x) { return !bad[x.id.toLowerCase()]; });
-          renderCart();
-          toast(e.message + ' Barang itu dikeluarkan dari keranjang; tekan Simpan lagi.', true);
-        } else toast(e.message, true);
-      });
+    var d = openDialog('<form><h2>' + esc(FLOW_NAMES[flow]) + ' · ' + n + ' unit</h2>' + fields +
+      '<div class="actions"><button class="btn secondary" type="button" data-r="0">Batal</button><button class="btn success" type="submit">Simpan ' + n + ' unit</button></div></form>');
+    var form = d.querySelector('form');
+    var cond = form.querySelector('[name=condition]');
+    if (cond) cond.addEventListener('change', function () { form.querySelector('#damageWrap').classList.toggle('hidden', cond.value !== 'RUSAK'); });
+    d.querySelector('[data-r="0"]').addEventListener('click', closeDialog);
+    var first = form.querySelector('input[name=location], select'); if (first) first.focus();
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var f = {};
+      new FormData(form).forEach(function (v, k) { f[k] = String(v).trim(); });
+      if (flow === 'check') {
+        if (f.condition === 'RUSAK' && !f.damageNote) { toast('Keterangan kerusakan wajib diisi.', true); form.querySelector('[name=damageNote]').focus(); return; }
+      } else {
+        if (!f.eventDate) { toast('Tanggal wajib diisi.', true); form.querySelector('[name=eventDate]').focus(); return; }
+        if (!f.location) { toast('Lokasi wajib diisi.', true); form.querySelector('[name=location]').focus(); return; }
+      }
+      drafts[flow] = f;
+      closeDialog();
+      commitFlow(f);
+    });
+  }
+
+  function commitFlow(f) {
+    var cart = carts[flow];
+    var payload = { action: FLOWS[flow].action, ids: cart.map(function (x) { return x.id; }), note: f.note || '' };
+    payload.cabinetIds = cart.map(function (x) { return x._cartCabinetId; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+    if (flow === 'check') { payload.condition = f.condition; payload.damageNote = f.condition === 'RUSAK' ? f.damageNote : ''; }
+    else { payload.eventDate = f.eventDate; payload.location = f.location; payload.eventName = f.eventName || ''; if (flow === 'in') payload.storeLocation = f.storeLocation || ''; }
+    var thisFlow = flow;
+    pendingBatch[thisFlow] = pendingBatch[thisFlow] || uuid();
+    api('commit', payload, { batchId: pendingBatch[thisFlow], loadingText: 'Menyimpan ' + cart.length + ' unit...' }).then(function (d) {
+      delete pendingBatch[thisFlow];
+      carts[thisFlow] = [];
+      drafts[thisFlow] = thisFlow === 'check' ? { condition: 'BAIK' } : {};
+      applySnapshot(d);
+      toast(d.message || 'Tersimpan.');
+      scanStatus('Tersimpan. Siap scan berikutnya.', 'ok');
+      buzz(true);
+    }).catch(function (e) {
+      if (e.invalid && e.invalid.length) {
+        var bad = {}; e.invalid.forEach(function (id) { bad[id.toLowerCase()] = true; });
+        carts[thisFlow] = carts[thisFlow].filter(function (x) { return !bad[x.id.toLowerCase()]; });
+        renderCart();
+        toast(e.message + ' Barang itu dikeluarkan dari keranjang; tekan Simpan lagi.', true);
+      } else toast(e.message, true);
     });
   }
 
@@ -469,6 +558,7 @@
         carts.group = [];
         applySnapshot(d);
         toast(d.message || 'Tersimpan.');
+        buzz(true);
       }).catch(function (e) {
         if (e.invalid && e.invalid.length) {
           var bad = {}; e.invalid.forEach(function (id) { bad[id.toLowerCase()] = true; });
@@ -478,12 +568,6 @@
         toast(e.message, true);
       });
     });
-  }
-
-  function resetForm(f) {
-    $('note-' + f).value = '';
-    if (f === 'check') { $('damageNote').value = ''; }
-    else { $('location-' + f).value = ''; $('event-' + f).value = ''; $('date-' + f).value = today(); if (f === 'in') $('store-in').value = 'Gudang'; }
   }
 
   function renderGroupTarget() {
@@ -506,14 +590,11 @@
   }
   function renderGroupPick() {
     if (flow !== 'group') return;
-    var list = groupPickMatches();
-    var shown = list.slice(0, 60);
-    $('groupPickList').innerHTML = shown.length ? shown.map(function (x) {
+    lazyList($('groupPickList'), groupPickMatches(), function (x) {
       return '<div class="item"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) +
-        (x.cabinetId ? ' <span class="pill">' + esc(x.cabinetId) + '</span>' : ' <span class="muted">belum ada wadah</span>') + '</div></div>' +
+        (x.cabinetId ? ' <span class="pill cab">' + esc(x.cabinetId) + '</span>' : ' <span class="muted">belum ada wadah</span>') + '</div></div>' +
         '<div class="ops"><button class="btn secondary small" type="button" data-pick="' + esc(x.id) + '">+ Tambah</button></div></div>';
-    }).join('') + (list.length > shown.length ? '<div class="small muted" style="padding:8px 0">Menampilkan ' + shown.length + ' dari ' + list.length + '. Persempit pencarian.</div>' : '')
-      : '<div class="empty">Tidak ada aset yang cocok.</div>';
+    }, { chunk: 40, empty: '<div class="empty">Tidak ada aset yang cocok.</div>' });
   }
 
   // ---------- rendering ----------
@@ -524,6 +605,10 @@
     return '<span class="pill">BELUM DICEK</span>';
   }
   function pillStatus(s) { return s === 'DI LUAR' ? '<span class="pill out">DI LUAR</span>' : '<span class="pill good">DI GUDANG</span>'; }
+  function actionPill(a) {
+    var cls = { KELUAR: 'out', MASUK: 'good', INSPEKSI: 'cab', KELOMPOK: 'gold', LEPAS: 'gold' }[a] || 'plain';
+    return '<span class="pill ' + cls + '">' + esc(ACTION_LABEL[a] || a) + '</span>';
+  }
 
   function renderAll() {
     renderHome();
@@ -543,20 +628,49 @@
     $('statCards').innerHTML = cards.map(function (c) {
       return '<div class="card ' + c[2] + '"><div class="label">' + c[0] + '</div><div class="num">' + Number(c[1] || 0).toLocaleString('id-ID') + '</div></div>';
     }).join('');
-    $('homeRecent').innerHTML = state.transactions.length ? txnTable(state.transactions.slice(0, 8)) : '<div class="empty">Belum ada transaksi.</div>';
+    var groups = groupTxns(state.transactions).slice(0, 8);
+    $('homeRecent').innerHTML = groups.length ? groups.map(batchRow).join('') : '<div class="empty">Belum ada transaksi.</div>';
   }
 
-  var TXN_HEAD = '<thead><tr><th>Waktu</th><th>Tindakan</th><th>ID / Barang</th><th>Tanggal</th><th>Lokasi</th><th>Acara</th><th>Wadah</th><th>Oleh</th><th>Catatan</th></tr></thead>';
-  function txnRow(t) {
-    var extra = t.action === 'INSPEKSI' ? ' ' + pillCondition(t.condition) + (t.damage_note ? '<br><small>' + esc(t.damage_note) + '</small>' : '') : '';
-    return '<tr><td class="nowrap">' + esc(t.ts) + '</td><td>' + esc(t.action) + extra + '</td><td><strong>' + esc(t.item_id) + '</strong><br>' + esc(t.item_name) + '</td><td class="nowrap">' + esc(t.event_date) +
-      '</td><td>' + esc(t.location) + '</td><td>' + esc(t.event_name) + '</td><td class="nowrap">' + esc(t.cabinet_id || '-') + '</td><td>' + esc(t.user) + '</td><td>' + esc(t.note) + '</td></tr>';
+  /** One row per save. Rows share a batch id; old rows without one are grouped by what they have in common. */
+  function groupTxns(rows) {
+    var out = [], cur = null;
+    rows.forEach(function (t) {
+      var key = t.batch_id ? 'b:' + t.batch_id : 'k:' + [t.action, t.ts, t.user, t.event_date, t.location, t.event_name, t.condition, t.damage_note].join('|');
+      if (!cur || cur.key !== key) { cur = { key: key, action: t.action, first: t, items: [] }; out.push(cur); }
+      cur.items.push(t);
+    });
+    return out;
   }
-  function txnTable(rows) { return '<table>' + TXN_HEAD + '<tbody>' + rows.map(txnRow).join('') + '</tbody></table>'; }
+  function batchRow(g) {
+    var t = g.first, n = g.items.length;
+    var where = [t.location, t.event_name].filter(Boolean).join(' · ');
+    var what = n === 1 ? esc(t.item_id) : n + ' unit';
+    var detail = '';
+    if (g.action === 'INSPEKSI') detail = pillCondition(t.condition) + (t.damage_note ? '<span class="muted">' + esc(t.damage_note) + '</span>' : '');
+    else if (g.action === 'KELOMPOK' || g.action === 'LEPAS') detail = t.cabinet_id ? '<span class="pill cab">' + esc(t.cabinet_id) + '</span>' : '';
+    else if (where) detail = '<span>' + esc(where) + '</span>';
+    if (t.note && g.action !== 'INSPEKSI') detail += '<span class="muted">' + esc(t.note) + '</span>';
+    var when = shortDate(t.event_date || t.ts) + (hhmm(t.ts) ? ' ' + hhmm(t.ts) : '');
+    var types = {}; g.items.forEach(function (x) { types[x.item_type] = (types[x.item_type] || 0) + 1; });
+    var typeLine = Object.keys(types).map(function (k) { return types[k] + ' ' + typeLabel(k); }).join(' · ');
+    return '<details class="batch"><summary><div class="info"><div class="line1">' + actionPill(g.action) + '<strong>' + what + '</strong><span class="muted">' + esc(typeLine) + '</span></div>' +
+      '<div class="meta">' + detail + '</div></div><div class="when"><span>' + esc(when) + '</span><span class="muted">' + esc(t.user) + '</span></div>' + ICON.chev + '</summary>' +
+      '<div class="rows">' + g.items.map(function (x) {
+        return '<div class="rowline"><strong>' + esc(x.item_id) + '</strong><span class="muted">' + esc(x.item_name) + (x.cabinet_id ? ' · ' + esc(x.cabinet_id) : '') + '</span></div>';
+      }).join('') + '</div></details>';
+  }
+  function txnLine(t) {
+    var where = [t.location, t.event_name].filter(Boolean).join(' · ');
+    var detail = t.action === 'INSPEKSI' ? pillCondition(t.condition) + (t.damage_note ? '<span class="muted">' + esc(t.damage_note) + '</span>' : '')
+      : (t.cabinet_id && (t.action === 'KELOMPOK' || t.action === 'LEPAS') ? '<span class="pill cab">' + esc(t.cabinet_id) + '</span>' : (where ? '<span>' + esc(where) + '</span>' : ''));
+    if (t.note && t.action !== 'INSPEKSI') detail += '<span class="muted">' + esc(t.note) + '</span>';
+    return '<div class="item"><div class="info"><div class="line1">' + actionPill(t.action) + '<strong>' + esc(shortDate(t.event_date || t.ts)) + '</strong><span class="muted">' + esc(hhmm(t.ts)) + ' · ' + esc(t.user) + '</span></div><div class="meta">' + detail + '</div></div></div>';
+  }
 
   function inventoryMatches() {
     var q = $('inventorySearch').value.trim().toLowerCase();
-    var f = $('inventoryFilter').value;
+    var f = inventoryFilter;
     return state.items.filter(function (x) {
       if (f === 'in' && x.locationStatus === 'DI LUAR') return false;
       if (f === 'out' && x.locationStatus !== 'DI LUAR') return false;
@@ -578,7 +692,7 @@
       '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' +
       (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + (x.damageNote ? '<span class="muted">' + esc(x.damageNote) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
   }
-  /** Tap a row: one sheet with everything you can do with the item. */
+  /** Tap a row: one sheet with everything you can do with the item. The likely action is the white one. */
   function itemSheet(id) {
     var x = state.items.filter(function (i) { return i.id === id; })[0];
     if (!x) return;
@@ -589,10 +703,10 @@
       (x.damageNote ? '<p class="small muted" style="margin:6px 0 0">' + esc(x.damageNote) + '</p>' : '') +
       (x.lastUser ? '<p class="small muted" style="margin:6px 0 0">Terakhir: ' + esc(x.updatedAt) + ' oleh ' + esc(x.lastUser) + '</p>' : '') + '</div></div>' +
       '<div class="sheet-grid">' +
+      '<button class="btn ' + (isOut ? 'secondary' : '') + '" type="button" data-a="out"' + (isOut ? ' disabled' : '') + '>' + ICON.out + 'Barang Keluar</button>' +
+      '<button class="btn ' + (isOut ? '' : 'secondary') + '" type="button" data-a="in"' + (isOut ? '' : ' disabled') + '>' + ICON.inn + 'Barang Masuk</button>' +
       '<button class="btn secondary" type="button" data-a="check">' + ICON.check + 'Pengecekan Kondisi</button>' +
       '<button class="btn secondary" type="button" data-a="history">' + ICON.clock + 'Riwayat</button>' +
-      '<button class="btn secondary" type="button" data-a="out"' + (isOut ? ' disabled' : '') + '>' + ICON.out + 'Barang Keluar</button>' +
-      '<button class="btn secondary" type="button" data-a="in"' + (isOut ? '' : ' disabled') + '>' + ICON.inn + 'Barang Masuk</button>' +
       (admin ? '<button class="btn secondary" type="button" data-a="edit">' + ICON.edit + 'Edit</button><button class="btn danger" type="button" data-a="deactivate">' + ICON.trash + 'Nonaktifkan</button>' : '') +
       '</div><button class="btn secondary block sheet-close" type="button" data-a="close">Tutup</button>');
     d.querySelectorAll('[data-a]').forEach(function (b) {
@@ -625,15 +739,17 @@
     var c = state.containers.filter(function (k) { return k.cabinetId === cid; })[0];
     if (!c) return;
     var dis = c.itemCount ? '' : ' disabled';
+    var primary = !c.itemCount ? 'group' : (c.outCount === 0 ? 'out' : (c.outCount === c.itemCount ? 'in' : 'group'));
+    var cls = function (a) { return a === primary ? 'btn' : 'btn secondary'; };
     var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(c.cabinetId) + '</h2><div>' + esc(c.name) + ' <span class="muted">· ' + (c.containerType === 'BOX' ? 'Box' : 'Kabinet') + (c.category ? ' · ' + esc(c.category) : '') + '</span></div>' +
       '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.damagedCount ? '<span class="pill bad">' + c.damagedCount + ' rusak</span>' : '') + (c.outCount ? '<span class="pill out">' + c.outCount + ' di luar</span>' : '') + '</div>' +
       (c.note ? '<p class="small muted" style="margin:6px 0 0">' + esc(c.note) + '</p>' : '') + '</div></div>' +
       '<div class="sheet-grid">' +
-      '<button class="btn secondary full" type="button" data-a="group">' + ICON.box + 'Kelompokkan aset ke sini</button>' +
+      '<button class="' + cls('group') + ' full" type="button" data-a="group">' + ICON.box + 'Kelompokkan aset ke sini</button>' +
+      '<button class="' + cls('out') + '" type="button" data-a="out"' + dis + '>' + ICON.out + 'Keluarkan semua isi</button>' +
+      '<button class="' + cls('in') + '" type="button" data-a="in"' + dis + '>' + ICON.inn + 'Masukkan semua isi</button>' +
       '<button class="btn secondary" type="button" data-a="check"' + dis + '>' + ICON.check + 'Cek semua isi</button>' +
       '<button class="btn secondary" type="button" data-a="edit">' + ICON.edit + 'Edit</button>' +
-      '<button class="btn secondary" type="button" data-a="out"' + dis + '>' + ICON.out + 'Keluarkan semua isi</button>' +
-      '<button class="btn secondary" type="button" data-a="in"' + dis + '>' + ICON.inn + 'Masukkan semua isi</button>' +
       '</div><button class="btn secondary block sheet-close" type="button" data-a="close">Tutup</button>');
     d.querySelectorAll('[data-a]').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -646,25 +762,26 @@
     });
   }
 
-  function renderHistory() {
+  function historyMatches() {
     var q = $('historySearch').value.trim().toLowerCase();
     var a = $('historyAction').value;
-    var rows = state.transactions.filter(function (t) {
+    return state.transactions.filter(function (t) {
       if (a && t.action !== a) return false;
       if (!q) return true;
       return [t.item_id, t.item_name, t.event_name, t.location, t.user, t.cabinet_id, t.note, t.batch_id].join(' ').toLowerCase().indexOf(q) >= 0;
     });
-    $('historyCount').textContent = rows.length + ' dari ' + state.transactions.length + ' transaksi terakhir yang dimuat. Riwayat lengkap ada di sheet.';
-    var host = $('historyTable');
-    if (!rows.length) { host.innerHTML = '<div class="empty">Belum ada riwayat.</div>'; return; }
-    host.innerHTML = '<table>' + TXN_HEAD + '<tbody></tbody></table>';
-    lazyList(host.querySelector('tbody'), rows, txnRow, { row: 'tr', chunk: 60 });
+  }
+  function renderHistory() {
+    var rows = historyMatches();
+    var groups = groupTxns(rows);
+    $('historyCount').textContent = groups.length + ' penyimpanan, ' + rows.length + ' baris, dari ' + state.transactions.length + ' baris terakhir yang dimuat. Riwayat lengkap ada di sheet.';
+    lazyList($('historyTable'), groups, batchRow, { chunk: 40, empty: '<div class="empty">Belum ada riwayat.</div>' });
   }
 
   function showHistory(id) {
     api('history', { itemId: id }, { loadingText: 'Memuat riwayat ' + id }).then(function (d) {
       var rows = d.transactions || [];
-      openDialog('<h2>Riwayat ' + esc(id) + '</h2>' + (rows.length ? '<div class="tablewrap" style="max-height:60vh">' + txnTable(rows) + '</div>' : '<div class="empty">Belum ada riwayat.</div>') +
+      openDialog('<h2>Riwayat ' + esc(id) + '</h2>' + (rows.length ? '<div class="list" style="max-height:60vh;overflow:auto">' + rows.map(txnLine).join('') + '</div>' : '<div class="empty">Belum ada riwayat.</div>') +
         '<div class="actions"><button class="btn secondary" type="button" id="dlgClose">Tutup</button></div>');
       $('dlgClose').addEventListener('click', closeDialog);
     }).catch(function (e) { toast(e.message, true); });
@@ -715,6 +832,41 @@
     members.forEach(function (m) { if (pushCart(m, f, cid)) added++; });
     showPage('scan');
     toast(added + ' aset dari ' + cid + ' masuk ke keranjang.');
+  }
+
+  // ---------- scan to look up: point at a label, get its sheet ----------
+
+  function lookupScan() {
+    if (!window.Html5Qrcode) { toast('Pustaka kamera tidak termuat.', true); return; }
+    ensureAudio();
+    var d = openDialog('<h2>Scan untuk mencari</h2><p class="small muted">Arahkan ke label barang atau box.</p>' +
+      '<div class="viewfinder" id="lookupView"><div id="lookupReader"></div><div class="corners"><i></i></div></div>' +
+      '<div class="row" style="margin-top:12px"><input id="lookupInput" placeholder="Atau ketik ID" autocomplete="off" autocapitalize="off"><button class="btn" type="button" id="lookupGo">Cari</button></div>' +
+      '<div class="actions"><button class="btn secondary block" type="button" id="lookupClose">Tutup</button></div>', stopLookup);
+    var done = false;
+    function found(code) {
+      if (done) return; done = true;
+      resolveCode(String(code || '').trim()).then(function (hit) {
+        closeDialog();
+        buzz(true);
+        if (hit.item) itemSheet(hit.item.id); else if (hit.container) containerSheet(hit.container.cabinetId);
+      }).catch(function (e) { done = false; buzz(false); toast(e.message, true); });
+    }
+    $('lookupClose').addEventListener('click', closeDialog);
+    $('lookupGo').addEventListener('click', function () { found($('lookupInput').value); });
+    $('lookupInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); found($('lookupInput').value); } });
+    d.addEventListener('cancel', function () { stopLookup(); }, { once: true });
+    try {
+      lookupScanner = makeScanner('lookupReader');
+      lookupScanner.start({ facingMode: 'environment' }, SCAN_CONFIG, function (text) { found(text); }, function () { /* nothing yet */ })
+        .then(function () { $('lookupView').classList.add('on'); })
+        .catch(function (err) { var inp = $('lookupInput'); if (!inp) return; toast('Kamera tidak bisa dibuka: ' + ((err && err.message) || err) + '. Ketik ID di bawah.', true); inp.focus(); });
+    } catch (err) { toast('Kamera tidak tersedia. Ketik ID di bawah.', true); }
+  }
+  function stopLookup() {
+    if (!lookupScanner) return;
+    var s = lookupScanner; lookupScanner = null;
+    try { s.stop().then(function () { s.clear(); }).catch(function () { /* not running */ }); } catch (e) { /* ignore */ }
   }
 
   // ---------- labels ----------
@@ -815,14 +967,14 @@
       bootstrap();
     });
     $('menuBtn').addEventListener('click', function () {
-      var d = openDialog('<h2>' + esc(state.me ? state.me.name : '') + '</h2><p class="muted small">' + esc(cfg.appName || 'Inventory Scanner') + ' · ' + esc(location.host) + '</p>' +
+      var d = openDialog('<h2>' + esc(state.me ? state.me.name : '') + '</h2><p class="muted small">' + esc(cfg.appName || 'Vortex Inventory') + ' · ' + esc(location.host) + '</p>' +
         '<div class="actions" style="flex-direction:column"><button class="btn secondary" type="button" data-m="reload">Muat ulang data</button>' +
         '<button class="btn secondary" type="button" data-m="labels">Cetak label QR</button>' +
         '<button class="btn secondary" type="button" data-m="logout">Keluar</button><button class="btn" type="button" data-m="close">Tutup</button></div>');
       d.querySelectorAll('[data-m]').forEach(function (b) {
         b.addEventListener('click', function () {
           closeDialog();
-          if (b.dataset.m === 'reload') bootstrap();
+          if (b.dataset.m === 'reload') refreshQuiet(true);
           if (b.dataset.m === 'labels') showPage('labels');
           if (b.dataset.m === 'logout') logout();
         });
@@ -838,14 +990,13 @@
     document.querySelectorAll('#flowTabs button').forEach(function (b) { b.addEventListener('click', function () { setFlow(b.dataset.flow); }); });
 
     $('camStart').addEventListener('click', startCamera);
-    $('camStop').addEventListener('click', stopCamera);
-    $('scanAdd').addEventListener('click', function () { var v = $('scanInput').value; $('scanInput').value = ''; handleCode(v); $('scanInput').focus(); });
+    $('camStop').addEventListener('click', function () { stopCamera(false); scanStatus('Kamera dihentikan.', ''); });
+    $('scanAdd').addEventListener('click', function () { ensureAudio(); var v = $('scanInput').value; $('scanInput').value = ''; handleCode(v); $('scanInput').focus(); });
     $('scanInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('scanAdd').click(); } });
     $('cartClear').addEventListener('click', function () { carts[flow] = []; if (flow === 'group') { groupTarget = ''; $('groupTarget').value = ''; } renderCart(); renderGroupPick(); });
     $('cartList').addEventListener('click', function (e) { var b = e.target.closest('[data-remove]'); if (b) { removeFromCart(flow, b.dataset.remove); if (flow === 'group') renderGroupPick(); } });
     $('saveBtn').addEventListener('click', saveFlow);
     $('groupUnassign').addEventListener('click', function () { saveGroup('unassign'); });
-    $('condition').addEventListener('change', function () { $('damageWrap').classList.toggle('hidden', $('condition').value !== 'RUSAK'); });
     $('groupTarget').addEventListener('change', function () {
       var next = $('groupTarget').value;
       if (carts.group.length && groupTarget && next !== groupTarget) {
@@ -873,7 +1024,13 @@
     });
 
     $('inventorySearch').addEventListener('input', renderInventory);
-    $('inventoryFilter').addEventListener('change', renderInventory);
+    $('inventoryFilter').addEventListener('click', function (e) {
+      var b = e.target.closest('[data-f]'); if (!b) return;
+      inventoryFilter = b.dataset.f;
+      document.querySelectorAll('#inventoryFilter [data-f]').forEach(function (c) { c.classList.toggle('active', c === b); });
+      renderInventory();
+    });
+    $('lookupScanBtn').addEventListener('click', lookupScan);
     $('inventoryList').addEventListener('click', function (e) { var r = e.target.closest('[data-open]'); if (r) itemSheet(r.dataset.open); });
     $('inventoryList').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var r = e.target.closest('[data-open]'); if (r) itemSheet(r.dataset.open); } });
     $('importBtn').addEventListener('click', importDialog);
@@ -920,11 +1077,11 @@
     });
 
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) { stopCamera(); return; }
+      if (document.hidden) { stopCamera(true); stopLookup(); return; }
+      if (page === 'scan' && cameraWanted() && !cameraOn && !$('dlg').open) startCamera();
       // Coming back to this tab (e.g. after saving on a phone): re-read the sheet, at most once a minute.
       if (session && state.me && Date.now() - lastRefresh > 60000) refreshQuiet();
     });
-    ['out', 'in'].forEach(function (f) { $('date-' + f).value = today(); });
   }
 
   // Exposed for the headless smoke test and for debugging from the console.

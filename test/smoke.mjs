@@ -55,14 +55,14 @@ await sleep(800);
 check('app view shown after login', await evaluate(`!document.getElementById('appView').classList.contains('hidden')`));
 const stats = await evaluate(`[...document.querySelectorAll('#statCards .card')].map(c => c.querySelector('.label').textContent + '=' + c.querySelector('.num').textContent)`);
 check('stat cards render', stats.length === 7 && stats[0] === 'Total unit aktif=48', stats.join(', '));
-check('recent transactions render', (await evaluate(`document.querySelectorAll('#homeRecent tbody tr').length`)) === 8);
+check('recent saves render as grouped rows', (await evaluate(`document.querySelectorAll('#homeRecent details').length`)) >= 4);
 check('session persisted', (await evaluate(`JSON.parse(localStorage.getItem('inventory-scanner.session')).user`)) === 'admin');
 
 await evaluate(`inventoryApp.showPage('inventory'); document.querySelectorAll('#inventoryList .item').length`);
 check('inventory list renders', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 48);
-await evaluate(`document.getElementById('inventoryFilter').value='out'; document.getElementById('inventoryFilter').dispatchEvent(new Event('change')); true`);
+await evaluate(`document.querySelector('#inventoryFilter [data-f="out"]').click(); true`);
 check('filter "Di luar" works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 8);
-await evaluate(`document.getElementById('inventoryFilter').value=''; document.getElementById('inventorySearch').value='psu'; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); true`);
+await evaluate(`document.querySelector('#inventoryFilter [data-f=""]').click(); document.getElementById('inventorySearch').value='psu'; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); true`);
 check('search works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 6);
 
 await evaluate(`document.getElementById('inventorySearch').value=''; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); document.querySelector('#inventoryList [data-open]').click(); true`);
@@ -81,20 +81,25 @@ await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`);
 check('scanning a box label adds its 16 members plus the box itself', (await evaluate(`inventoryApp.carts.out.length`)) === 18, 'cart=' + await evaluate(`inventoryApp.carts.out.length`));
 check('cart renders rows', (await evaluate(`document.querySelectorAll('#cartList .item').length`)) === 18);
 
-await evaluate(`document.getElementById('location-out').value='Ballroom Hotel ABC'; document.getElementById('event-out').value='Wisuda'; inventoryApp.saveFlow(); true`);
+check('newest scan is at the top of the cart', (await evaluate(`inventoryApp.carts.out[0].id`)) === '2-MVG-12-25-NY-BX.001' && (await evaluate(`inventoryApp.carts.out[17].id`)) === '1-MVG-12-25-NY-MD.030');
+await evaluate(`inventoryApp.saveFlow(); true`);
 await sleep(200);
-check('confirm dialog opens', await evaluate(`document.getElementById('dlg').open === true`));
-await evaluate(`document.querySelector('#dlg [data-r="1"]').click(); true`);
+check('Simpan opens the save sheet', await evaluate(`document.getElementById('dlg').open === true && !!document.querySelector('#dlg [name=location]')`));
+await evaluate(`document.querySelector('#dlg form').requestSubmit(); true`);
+await sleep(200);
+check('save sheet refuses an empty location and stays open', await evaluate(`document.getElementById('dlg').open === true`));
+await evaluate(`document.querySelector('#dlg [name=location]').value='Ballroom Hotel ABC'; document.querySelector('#dlg [name=eventName]').value='Wisuda'; document.querySelector('#dlg form').requestSubmit(); true`);
 await sleep(600);
 const toast1 = await evaluate(`document.getElementById('toast').textContent`);
 check('refused check-out drops the 8 items already out', (await evaluate(`inventoryApp.carts.out.length`)) === 10, 'toast: ' + toast1.slice(0, 90));
 await evaluate(`inventoryApp.saveFlow(); true`);
 await sleep(200);
-await evaluate(`document.querySelector('#dlg [data-r="1"]').click(); true`);
+check('save sheet remembers the location from the refused attempt', (await evaluate(`document.querySelector('#dlg [name=location]').value`)) === 'Ballroom Hotel ABC');
+await evaluate(`document.querySelector('#dlg form').requestSubmit(); true`);
 await sleep(600);
 check('second save succeeds and clears the cart', (await evaluate(`inventoryApp.carts.out.length`)) === 0, 'toast: ' + await evaluate(`document.getElementById('toast').textContent`));
 check('stats updated: 18 out', (await evaluate(`inventoryApp.state().stats.out`)) === 18);
-check('location field reset', (await evaluate(`document.getElementById('location-out').value`)) === '');
+check('save button disabled on an empty cart', await evaluate(`document.getElementById('saveBtn').disabled === true`));
 
 await evaluate(`inventoryApp.setFlow('group'); true`);
 check('scanning a box in group flow sets it as the target', (await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`)) === true && (await evaluate(`document.getElementById('groupTarget').value`)) === '2-MVG-12-25-NY-BX.001');
@@ -105,7 +110,16 @@ await sleep(400);
 check('labels render as SVG and print is called', (await evaluate(`document.querySelectorAll('#printArea .qrcard svg').length`)) === 6 && (await evaluate(`window.__printed === true`)));
 
 await evaluate(`inventoryApp.showPage('history'); true`);
-check('history table renders', (await evaluate(`document.querySelectorAll('#historyTable tbody tr').length`)) > 40);
+check('history renders grouped saves', (await evaluate(`document.querySelectorAll('#historyTable details').length`)) >= 5);
+await evaluate(`document.querySelector('#historyTable details').open = true; true`);
+check('a save expands to its rows', (await evaluate(`document.querySelectorAll('#historyTable details[open] .rowline').length`)) > 0);
+await evaluate(`inventoryApp.showPage('inventory'); document.getElementById('lookupScanBtn').click(); true`);
+await sleep(400);
+check('scan-to-look-up dialog opens with a typed fallback', await evaluate(`document.getElementById('dlg').open && !!document.getElementById('lookupInput')`));
+await evaluate(`document.getElementById('lookupInput').value='1-MVG-12-25-NY-MD.002'; document.getElementById('lookupGo').click(); true`);
+await sleep(300);
+check('typed look-up opens the item sheet', (await evaluate(`document.querySelector('#dlg h2') && document.querySelector('#dlg h2').textContent`)) === '1-MVG-12-25-NY-MD.002');
+await evaluate(`document.querySelector('#dlg [data-a="close"]').click(); true`);
 
 check('no console errors or exceptions', errors.length === 0, errors.join(' | ').slice(0, 400));
 console.log(failed ? `\n${failed} check(s) failed` : '\nall smoke checks passed');

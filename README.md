@@ -43,32 +43,39 @@ The URL stays the same.
 
 ## Everyday use
 
+- **Scan.** Pick the flow at the top (Pengecekan Kondisi · Barang Keluar · Barang Masuk/Kembali ·
+  Kelompokkan), start the camera, point at labels. Each hit vibrates, beeps and lands at the top of the
+  cart with a short green flash. Typing an ID or a USB scanner's keystrokes into the field under the
+  camera does the same. Once the camera has been started it starts by itself the next time the Scan
+  screen opens; Hentikan switches that off.
+- **Save.** Simpan opens one sheet with the details (date, location, event, note; or the condition and a
+  damage note for a check) and the confirm. The sheet remembers what you typed if a save is refused, so
+  a retry is one tap.
+- **Boxes.** A container whose ID is the printed box label (e.g. `2-MVG-12-25-NY-BX.001`) is special:
+  scanning that label puts the whole contents in the cart (and the box itself if it is also an item).
+  In the Kelompokkan flow, scan the box first and then the modules going into it.
+- **Rules the server enforces.** Out only from the warehouse, in only when out, a damaged check needs a
+  note, a date and location are required, unknown IDs are refused. A refused save names the offending IDs
+  and the app removes them from the cart so you can save the rest.
+- **Retries are safe.** Every save carries a batch id; a repeat after a timeout is not written twice.
 - **Look.** The Vortex theme: dark surfaces, the red mark, gold section tags, Rethink Sans headings, taken
   from vortex.so. The logo files are `vortex-logo.png` (lockup, white wordmark) and `vortex-mark.png`.
-- **Rows open a sheet.** Tap an item or a cabinet row and one sheet shows everything you can do with it:
-  add to a flow, history, edit, deactivate. No button rows in the list.
+- **Rows open a sheet.** Tap an item or a cabinet row and one sheet shows everything you can do with it;
+  the likely action is the white button (Keluar for an item in the warehouse, Masuk for one that is out).
+- **Find by scanning.** The scan button beside the inventory search opens the camera; point at a label
+  and its sheet opens. Typing the ID there works too.
+- **Filters are chips.** Semua · Di gudang · Di luar · Rusak · Belum dicek · Tanpa wadah, one tap each.
+- **History is per save.** Dashboard and Riwayat show one row per save ("Keluar · 8 unit · Ballroom Hotel
+  ABC · Wisuda · 23:18 · admin") that expands to its rows. The per-item Riwayat lists that item's rows.
 - **Long lists render as you scroll.** All items come down in one call (a few hundred rows is ~100 KB);
-  the page draws 60 at a time and adds more as you scroll, on the inventory, history, labels and grouping
-  lists. Search and filters work on the whole set.
+  the page draws 60 at a time and adds more as you scroll. Search and filters work on the whole set.
 - **Refresh.** Pull down from the top of any page on a phone, tap the refresh icon in the top bar, or just
   come back to the tab: it re-reads the sheet when it regains focus (at most once a minute). The top bar
   shows when the data was last read.
 - **Two layouts, one page.** On a laptop or tablet the app shows the sidebar of the original prototype
   (Dashboard · Action · Tools · Riwayat) and the two-column scan screen; on a phone a bottom bar. Same
-  names, same forms. Each device finishes its own job: the phone scans and saves, and a desktop tab
-  re-reads the sheet when it comes back into focus (at most once a minute) or on ⋯ › Muat ulang data.
-
-- **Scan.** Pick the flow at the top (Cek Kondisi · Keluar · Masuk · Kelompok), start the camera, point
-  at labels; each hit vibrates and appears in the cart. Typing an ID or a USB scanner's keystrokes into the
-  field below the camera does the same. Fill the form, Save.
-- **Boxes.** A container whose ID is the printed box label (e.g. `2-MVG-12-25-NY-BX.001`) is special:
-  scanning that label puts the whole contents in the cart (and the box itself if it is also an item).
-  In the Kelompok flow, scan the box first and then the modules going into it.
-- **Rules the server enforces.** Out only from the warehouse, in only when out, a damaged check needs a
-  note, a date and location are required, unknown IDs are refused. A refused save names the offending IDs
-  and the app removes them from the cart so you can save the rest.
-- **Retries are safe.** Every save carries a batch id; a repeat after a timeout is not written twice.
-- **Labels.** Cetak QR (menu ⋯) draws QR codes in the browser; print at 100 % scale. Sizes 15, 20, 25 mm.
+  names, same forms. Each device finishes its own job.
+- **Labels.** Cetak QR draws QR codes in the browser; print at 100 % scale. Sizes 15, 20, 25 mm.
 
 ## The sheet
 
