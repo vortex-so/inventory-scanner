@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2563eb">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Inventory">
+  <title>Inventory Scanner</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- Shown only when config.js has no API URL yet -->
+<section id="setupView" class="main hidden">
+  <div class="panel">
+    <h1>Inventory Scanner belum dihubungkan</h1>
+    <p class="muted">Isi <code>apiUrl</code> di <code>config.js</code> dengan alamat web app Apps Script (berakhiran <code>/exec</code>). Langkahnya ada di README repositori.</p>
+  </div>
+</section>
+
+<!-- Login -->
+<section id="loginView" class="main hidden">
+  <form class="login panel" id="loginForm" autocomplete="off">
+    <h1 id="loginTitle">Inventory Scanner</h1>
+    <p class="muted">Masuk dengan nama dan kode akses yang diberikan admin.</p>
+    <label for="loginUser">Nama</label>
+    <input id="loginUser" name="user" required autocapitalize="words" autocomplete="username">
+    <label for="loginCode">Kode akses</label>
+    <input id="loginCode" name="code" required type="password" inputmode="numeric" autocomplete="current-password">
+    <div id="loginError" class="notice error hidden" style="margin-top:12px"></div>
+    <div class="actions"><button class="btn block" type="submit">Masuk</button></div>
+  </form>
+</section>
+
+<!-- App -->
+<div id="appView" class="hidden">
+  <header class="topbar">
+    <div><h1 id="pageTitle">Beranda</h1></div>
+    <div class="row" style="flex:0 0 auto">
+      <div class="who"><strong id="whoName"></strong><span id="whoRole"></span></div>
+      <button class="btn secondary small" id="menuBtn" aria-label="Menu">⋯</button>
+    </div>
+  </header>
+
+  <main class="main">
+
+    <section class="page" id="page-home">
+      <div class="cards" id="statCards"></div>
+      <div class="actions" style="margin:0 0 14px">
+        <button class="btn" data-go="scan" data-flow="check">Cek kondisi</button>
+        <button class="btn" data-go="scan" data-flow="out">Barang keluar</button>
+        <button class="btn" data-go="scan" data-flow="in">Barang masuk</button>
+      </div>
+      <div class="panel"><div class="panel-head"><h2>Transaksi terbaru</h2><button class="btn secondary small" data-go="history">Semua riwayat</button></div><div id="homeRecent" class="tablewrap"></div></div>
+      <div class="notice">Satu QR untuk setiap unit fisik. Kalau ada 100 modul, daftarkan sebagai 100 ID agar kondisi dan riwayat tiap modul bisa dilacak.</div>
+    </section>
+
+    <section class="page" id="page-scan">
+      <div class="flowtabs" id="flowTabs">
+        <button type="button" data-flow="check">Cek Kondisi<span class="count" id="count-check">0 unit</span></button>
+        <button type="button" data-flow="out">Keluar<span class="count" id="count-out">0 unit</span></button>
+        <button type="button" data-flow="in">Masuk<span class="count" id="count-in">0 unit</span></button>
+        <button type="button" data-flow="group">Kelompok<span class="count" id="count-group">0 aset</span></button>
+      </div>
+
+      <div class="panel">
+        <div id="groupTargetWrap" class="hidden">
+          <label for="groupTarget">Kabinet / Box tujuan</label>
+          <select id="groupTarget"><option value="">Pilih kabinet / box</option></select>
+          <p class="small muted" style="margin-top:6px">Atau scan label box/kabinet dulu, lalu scan isinya.</p>
+        </div>
+        <div id="reader"></div>
+        <div class="actions" style="margin-top:10px">
+          <button class="btn" id="camStart" type="button">Mulai kamera</button>
+          <button class="btn secondary" id="camStop" type="button">Hentikan</button>
+        </div>
+        <div id="scanStatus" class="scanstatus">Mulai kamera lalu arahkan ke QR. Atau ketik ID / pakai USB scanner di kolom bawah, lalu Enter.</div>
+        <div class="row" style="margin-top:10px">
+          <input id="scanInput" placeholder="ID barang atau USB scanner, lalu Enter" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="done">
+          <button class="btn" id="scanAdd" type="button">Tambah</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2 id="cartTitle">Keranjang</h2><button class="btn secondary small" id="cartClear" type="button">Kosongkan</button></div>
+        <div id="cartList" class="list cart"></div>
+        <div id="groupPick" class="hidden">
+          <h3>Tambah dari daftar</h3>
+          <div class="row"><input id="groupSearch" placeholder="Cari ID, nama, jenis, kabinet..."><button class="btn secondary" id="groupAddAll" type="button">Tambah semua</button></div>
+          <div id="groupPickList" class="list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div id="form-check">
+          <h2>Catat hasil pengecekan</h2>
+          <label for="condition">Hasil pemeriksaan *</label>
+          <select id="condition"><option value="BAIK">BAIK</option><option value="RUSAK">RUSAK</option></select>
+          <div id="damageWrap" class="hidden"><label for="damageNote">Keterangan kerusakan *</label><textarea id="damageNote" placeholder="Contoh: pixel mati, power tidak menyala, casing retak"></textarea></div>
+          <label for="note-check">Catatan umum (opsional)</label><textarea id="note-check"></textarea>
+        </div>
+        <div id="form-out" class="hidden">
+          <h2>Detail barang keluar</h2>
+          <div class="formgrid">
+            <div><label for="date-out">Tanggal *</label><input id="date-out" type="date"></div>
+            <div><label for="event-out">Nama acara / proyek</label><input id="event-out" placeholder="Contoh: Konser / Seminar"></div>
+            <div class="full"><label for="location-out">Lokasi pemasangan / tujuan *</label><input id="location-out" placeholder="Contoh: Ballroom Hotel ABC"></div>
+            <div class="full"><label for="note-out">Catatan umum (opsional)</label><textarea id="note-out"></textarea></div>
+          </div>
+          <p class="small muted">Barang yang sudah DI LUAR tidak bisa dikeluarkan lagi sebelum diproses masuk.</p>
+        </div>
+        <div id="form-in" class="hidden">
+          <h2>Detail barang masuk / kembali</h2>
+          <div class="formgrid">
+            <div><label for="date-in">Tanggal *</label><input id="date-in" type="date"></div>
+            <div><label for="event-in">Nama acara / proyek</label><input id="event-in" placeholder="Contoh: Konser / Seminar"></div>
+            <div><label for="location-in">Lokasi asal / acara *</label><input id="location-in" placeholder="Contoh: Ballroom Hotel ABC"></div>
+            <div><label for="store-in">Disimpan di</label><input id="store-in" value="Gudang" placeholder="Contoh: Gudang Kubik"></div>
+            <div class="full"><label for="note-in">Catatan umum (opsional)</label><textarea id="note-in"></textarea></div>
+          </div>
+          <p class="small muted">Barang hanya bisa diproses masuk jika statusnya DI LUAR.</p>
+        </div>
+        <div id="form-group" class="hidden">
+          <h2>Kelompokkan aset</h2>
+          <p class="small muted">Aset yang sudah ada di wadah lain akan dipindahkan. Setiap aset tetap punya ID dan QR sendiri.</p>
+          <div class="actions"><button class="btn danger" id="groupUnassign" type="button">Lepas dari wadah</button></div>
+        </div>
+        <div class="savebar"><button class="btn success block" id="saveBtn" type="button">Simpan</button></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-inventory">
+      <div class="panel">
+        <div class="row">
+          <input id="inventorySearch" placeholder="Cari ID, nama, kategori, kabinet...">
+          <select id="inventoryFilter" style="flex:0 0 42%">
+            <option value="">Semua</option>
+            <option value="in">Di gudang</option>
+            <option value="out">Di luar</option>
+            <option value="damaged">Rusak</option>
+            <option value="unchecked">Belum dicek</option>
+            <option value="nocabinet">Tanpa wadah</option>
+          </select>
+        </div>
+        <div id="inventoryCount" class="small muted" style="margin-top:8px"></div>
+        <div id="inventoryList" class="list"></div>
+        <div class="actions"><button class="btn secondary hidden" id="inventoryMore" type="button">Tampilkan lebih banyak</button></div>
+      </div>
+      <div class="panel" id="importPanel">
+        <div class="panel-head"><h2>Tambah aset</h2><button class="btn secondary small" id="importToggle" type="button">Buka</button></div>
+        <form id="importForm" class="hidden">
+          <p class="muted small">Untuk ID yang sudah tercetak di label. Satu ID per baris; ID dipertahankan apa adanya dan menjadi isi QR. Maksimal 2.000 ID per proses, duplikat dilewati.</p>
+          <div class="formgrid">
+            <div><label>Jenis barang *</label><select name="type" id="importType" required></select></div>
+            <div><label>Nama barang *</label><input name="name" required placeholder="Contoh: Modul LED P2.9"></div>
+            <div><label>Kategori</label><input name="category" placeholder="Contoh: LED Screen"></div>
+            <div><label>Lokasi awal</label><input name="location" value="Gudang"></div>
+            <div class="full"><label>Daftar ID *</label><textarea name="ids" rows="8" required placeholder="1-MVG-12-25-NY-MD.001&#10;1-MVG-12-25-NY-MD.002"></textarea></div>
+          </div>
+          <div class="actions"><button class="btn" type="submit">Tambah aset</button></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="page" id="page-containers">
+      <div class="panel">
+        <div class="panel-head"><h2>Daftar kabinet &amp; box</h2><button class="btn secondary small" id="containerFormToggle" type="button">+ Tambah wadah</button></div>
+        <form id="containerForm" class="hidden" autocomplete="off">
+          <div class="formgrid">
+            <div><label>Jenis wadah *</label><select name="containerType" id="containerType" required><option value="">Pilih</option><option value="KABINET">Kabinet</option><option value="BOX">Box</option></select></div>
+            <div><label>ID wadah</label><input name="cabinetId" id="containerId" placeholder="Otomatis, atau isi label box fisik" maxlength="50"></div>
+            <div><label>Nama *</label><input name="name" required placeholder="Contoh: Kabinet LED Utama" maxlength="100"></div>
+            <div><label>Kategori</label><input name="category" placeholder="Contoh: Modul LED P2.9"></div>
+            <div class="full"><label>Catatan</label><input name="note" placeholder="Contoh: 4 x 4 modul"></div>
+          </div>
+          <p class="small muted">Kalau ID diisi dengan label box fisik (misalnya 2-MVG-12-25-NY-BX.001), scan label itu akan memasukkan seluruh isinya ke keranjang.</p>
+          <div class="actions"><button class="btn" type="submit">Simpan wadah</button><button class="btn secondary" type="button" id="containerFormCancel">Batal</button></div>
+        </form>
+        <div id="containerList" class="list"></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-history">
+      <div class="panel">
+        <div class="row"><input id="historySearch" placeholder="Cari ID, acara, lokasi, pengguna..."><select id="historyAction" style="flex:0 0 38%"><option value="">Semua</option><option>KELUAR</option><option>MASUK</option><option>INSPEKSI</option><option>KELOMPOK</option><option>LEPAS</option><option>IMPORT</option><option>EDIT</option><option>NONAKTIF</option></select></div>
+        <div id="historyCount" class="small muted" style="margin-top:8px"></div>
+        <div id="historyTable" class="tablewrap" style="margin-top:8px"></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-labels">
+      <div class="panel no-print">
+        <h2>Cetak label QR</h2>
+        <p class="small muted">Pilih unit yang mau dicetak. Di dialog cetak pakai skala 100% / ukuran sebenarnya.</p>
+        <div class="row"><input id="labelSearch" placeholder="Cari ID atau nama..."><select id="labelSize" style="flex:0 0 46%"><option value="15">QR 15 mm</option><option value="20">QR 20 mm</option><option value="25">QR 25 mm</option></select></div>
+        <div class="actions"><button class="btn secondary" id="labelSelectAll" type="button">Pilih semua hasil</button><button class="btn secondary" id="labelClear" type="button">Hapus pilihan</button><button class="btn success" id="labelPrint" type="button">Buat label &amp; cetak</button></div>
+        <div id="labelCount" class="small muted" style="margin-top:8px"></div>
+        <div id="labelList" class="list"></div>
+      </div>
+      <div id="printArea" class="qrgrid"></div>
+    </section>
+
+  </main>
+
+  <nav class="nav" id="nav">
+    <button type="button" data-page="home"><span class="ic">▦</span>Beranda</button>
+    <button type="button" data-page="scan"><span class="ic">▣</span>Scan</button>
+    <button type="button" data-page="inventory"><span class="ic">▤</span>Inventaris</button>
+    <button type="button" data-page="containers"><span class="ic">▧</span>Kabinet</button>
+    <button type="button" data-page="history"><span class="ic">◷</span>Riwayat</button>
+  </nav>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="toast" class="toast"></div>
+<div id="loading"><div class="box"><div class="spinner"></div><div id="loadingText">Memuat...</div></div></div>
+
+<script src="vendor/html5-qrcode.min.js"></script>
+<script src="vendor/qrcode.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
