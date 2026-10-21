@@ -49,13 +49,15 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
   '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json' };
 
 http.createServer((req, res) => {
+  // Same CORS answer Apps Script gives a simple POST, so one dev server can be another one's "trial" unit.
+  if (req.url === '/api' && req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-origin': '*' }); res.end(); return; }
   if (req.method === 'POST' && req.url === '/api') {
     let body = '';
     req.on('data', c => body += c);
     req.on('end', () => {
       let out;
       try { out = gas.handle(JSON.parse(body || '{}')); } catch (e) { out = { ok: false, error: String(e) }; }
-      res.writeHead(200, { 'content-type': 'application/json' });
+      res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
       res.end(JSON.stringify(out));
     });
     return;
