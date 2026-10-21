@@ -32,7 +32,9 @@ panel and the backup (File › Version history).
    Operators can scan, save and group; admins can also import, edit and deactivate items.
 4. **Deploy.** Deploy › New deployment › type Web app › Execute as **Me** · Who has access **Anyone** ›
    Deploy. Copy the URL ending in `/exec`.
-5. **Front end.** Put the URL into `config.js` (`apiUrl`). Commit and push. Enable Pages on the repo
+5. **Front end.** Put the URL into `config.js` as a unit: `{ key: 'media', name: 'Vortex Media', apiUrl: '…/exec' }`.
+   One unit means no selector on the login screen; a second sheet and script for another unit (KPTJ, Media's
+   camera gear) is one more line, and the login screen then asks which unit. Commit and push. Enable Pages on the repo
    (GitHub: Settings › Pages › Deploy from branch `main`, folder `/`). Open the Pages URL on a phone,
    log in with name and code, tap Add to Home Screen.
 6. **Items.** Admin › Inventaris › Tambah aset: paste the printed IDs (one per line) with their type and
@@ -58,6 +60,9 @@ The URL stays the same.
   note, a date and location are required, unknown IDs are refused. A refused save names the offending IDs
   and the app removes them from the cart so you can save the rest.
 - **Retries are safe.** Every save carries a batch id; a repeat after a timeout is not written twice.
+- **The cart survives.** Carts, drafts and the chosen flow are kept in the phone's local storage per unit
+  and user, so a closed browser, a phone call or a dead battery does not lose the scans. They come back on
+  the next login, refreshed against the current inventory.
 - **Look.** The Vortex theme: dark surfaces, the red mark, gold section tags, Rethink Sans headings, taken
   from vortex.so. The logo files are `vortex-logo.png` (lockup, white wordmark) and `vortex-mark.png`.
 - **Rows open a sheet.** Tap an item or a cabinet row and one sheet shows everything you can do with it;
@@ -95,6 +100,25 @@ records where a thing is, the asset register lives elsewhere.
 type into Tambah aset, or paste rows straight into `Items` with the columns above (set `active` to `TRUE`,
 `status` to `DI GUDANG` or `DI LUAR`). Containers likewise. Old history can be pasted into `Transactions`
 with the same column order; `batch_id` may be empty.
+
+## See the backend work, before any company account exists
+
+The dev server runs the real `Code.gs` in Node against an in-memory sheet and shows that sheet live:
+
+```
+node test/dev-server.mjs        # app on http://localhost:8787, the four tabs on http://localhost:8787/sheet
+```
+
+Save something in the app and watch the rows appear on `/sheet` (new rows are green). To try a real
+Google Sheet with your own account: do setup steps 1 to 4 above in that account, then
+
+```
+TRIAL_API=https://script.google.com/macros/s/XXXX/exec node test/dev-server.mjs
+```
+
+The login screen now offers two units, "Lokal (memori)" and "Percobaan (Google Sheet)". Pick the second,
+log in with the code `setup()` printed, and every save lands in the real sheet you can open in Drive.
+That is the production wiring, minus the hosting.
 
 ## Development
 

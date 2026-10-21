@@ -6,6 +6,7 @@
   var cfg = window.APP_CONFIG || {};
   var SESSION_KEY = 'inventory-scanner.session';
   var CAMERA_KEY = 'inventory-scanner.camera';
+  var CART_KEY = 'inventory-scanner.cart';
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -47,6 +48,13 @@
 
   var state = { me: null, items: [], containers: [], stats: {}, transactions: [], types: Object.keys(TYPE_LABELS) };
   var session = null;
+  // One backend per unit (a sheet plus its script). config.js lists them; a single apiUrl is one unit.
+  var units = Array.isArray(cfg.units) && cfg.units.length ? cfg.units.filter(function (u) { return u && u.apiUrl; })
+    : (cfg.apiUrl ? [{ key: 'default', name: cfg.appName || 'Inventory', apiUrl: cfg.apiUrl }] : []);
+  function currentUnit() {
+    var k = session && session.unit;
+    return units.filter(function (u) { return u.key === k; })[0] || units[0];
+  }
   var carts = { check: [], out: [], in: [], group: [] };
   var drafts = {};
   var pendingBatch = {};
@@ -58,6 +66,7 @@
   var labelSelected = {};
   var lastRefresh = 0;
   var audio = null;
+  var cartsReady = false; // persistCarts() stays quiet until the saved cart has been restored, or the first render would wipe it
 
   // ---------- small UI helpers ----------
 
@@ -189,7 +198,7 @@
     opts = opts || {};
     if (!opts.silent) loading(true, opts.loadingText || 'Menghubungi server...');
     var body = JSON.stringify({ user: session.user, code: session.code, action: action, payload: payload || {}, batchId: opts.batchId || '' });
-    return fetch(cfg.apiUrl, { method: 'POST', body: body, redirect: 'follow' })
+    return fetch(currentUnit().apiUrl, { method: 'POST', body: body, redirect: 'follow' })
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.json();
@@ -237,15 +246,19 @@
   // ---------- login ----------
 
   function init() {
-    if (!cfg.apiUrl) { show('setupView'); return; }
+    if (!units.length) { show('setupView'); return; }
     $('loginTitle').textContent = cfg.appName || 'Vortex Inventory';
-    $('brandName').textContent = cfg.appName || 'Vortex Inventory';
     document.title = cfg.appName || 'Vortex Inventory';
+    var sel = $('loginUnit');
+    sel.innerHTML = units.map(function (u) { return '<option value="' + esc(u.key) + '">' + esc(u.name) + '</option>'; }).join('');
+    $('loginUnitWrap').classList.toggle('hidden', units.length < 2);
     try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { session = null; }
+    if (session && session.unit) sel.value = session.unit;
     bindEvents();
     if (session && session.user && session.code) bootstrap();
     else show('loginView');
   }
+  function unitLabel() { var u = currentUnit(); return units.length > 1 ? u.name : (cfg.appName || 'Vortex Inventory'); }
 
   function bootstrap() {
     return api('bootstrap', {}, { loadingText: 'Memuat inventaris...' }).then(function (d) {
@@ -255,8 +268,11 @@
       $('whoRole').textContent = state.me.role === 'admin' ? 'admin' : 'operator';
       $('whoAvatar').textContent = state.me.name.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
       $('sideFoot').textContent = location.host;
+      $('brandName').textContent = unitLabel();
+      $('whoRole').textContent = (state.me.role === 'admin' ? 'admin' : 'operator') + (units.length > 1 ? ' · ' + currentUnit().name : '');
       document.body.classList.toggle('is-admin', state.me.role === 'admin');
       $('importBtn').classList.toggle('hidden', state.me.role !== 'admin');
+      restoreCarts();
       show('appView');
       showPage(page);
     }).catch(function (e) {
@@ -268,6 +284,8 @@
   function logout() {
     stopCamera();
     session = null;
+    Object.keys(carts).forEach(function (f) { carts[f] = []; });
+    drafts = {}; groupTarget = ''; cartsReady = false;
     try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
     $('loginError').classList.add('hidden');
     $('loginCode').value = '';
@@ -409,7 +427,7 @@
         groupTarget = hit.container.cabinetId;
         $('groupTarget').value = groupTarget;
         scanStatus('Tujuan: ' + hit.container.cabinetId + ' (' + hit.container.name + '). Sekarang scan isinya.', 'ok');
-        buzz(true); renderGroupPick(); return true;
+        buzz(true); renderGroupPick(); persistCarts(); return true;
       }
       if (!groupTarget) { scanStatus('Pilih atau scan kabinet/box tujuan dulu.', 'err'); buzz(false); return false; }
       if (pushCart(hit.item, 'group', '')) { scanStatus('Masuk keranjang: ' + hit.item.id, 'ok'); buzz(true); return true; }
@@ -439,6 +457,38 @@
     renderCart();
     return true;
   }
+  // The cart lives in local storage too, so a closed browser or a phone call does not lose the scans.
+  function cartKey() { return CART_KEY + '.' + (currentUnit() ? currentUnit().key : 'x') + '.' + (session && session.user ? session.user.toLowerCase() : 'x'); }
+  function persistCarts() {
+    if (!session || !cartsReady) return;
+    try {
+      var slim = {};
+      Object.keys(carts).forEach(function (f) { slim[f] = carts[f].map(function (x) { return { id: x.id, cab: x._cartCabinetId || '' }; }); });
+      localStorage.setItem(cartKey(), JSON.stringify({ carts: slim, drafts: drafts, flow: flow, groupTarget: groupTarget, at: Date.now() }));
+    } catch (e) { /* storage unavailable: nothing to do */ }
+  }
+  function restoreCarts() {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(cartKey()) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.carts) { cartsReady = true; return; }
+    var byId = {}; state.items.forEach(function (x) { byId[x.id] = x; });
+    var restored = 0;
+    Object.keys(carts).forEach(function (f) {
+      carts[f] = (saved.carts[f] || []).map(function (e) {
+        var x = byId[e.id]; if (!x) return null;
+        var copy = {}; for (var k in x) copy[k] = x[k];
+        copy._cartCabinetId = e.cab || ''; copy._at = 0;
+        return copy;
+      }).filter(Boolean);
+      restored += carts[f].length;
+    });
+    drafts = saved.drafts || {};
+    if (saved.groupTarget && state.containers.some(function (c) { return c.cabinetId === saved.groupTarget; })) groupTarget = saved.groupTarget;
+    if (saved.flow && FLOWS[saved.flow]) flow = saved.flow;
+    cartsReady = true;
+    setFlow(flow);
+    if (restored) { page = 'scan'; toast('Keranjang dipulihkan: ' + restored + ' unit dari sebelumnya.'); }
+  }
   function removeFromCart(f, id) {
     carts[f] = carts[f].filter(function (x) { return x.id !== id; });
     renderCart();
@@ -457,6 +507,7 @@
     $('cartSummary').textContent = cart.length ? Object.keys(byType).map(function (t) { return byType[t] + ' ' + typeLabel(t); }).join(' · ') : '';
     $('saveBtn').disabled = !cart.length;
     $('saveBtn').textContent = flow === 'group' ? 'Simpan ' + cart.length + ' aset ke wadah' : 'Simpan ' + cart.length + ' unit';
+    persistCarts();
     if (!cart.length) { $('cartList').innerHTML = '<div class="empty">Belum ada barang. Scan QR, ketik ID, atau pilih dari daftar inventaris.</div>'; return; }
     var now = Date.now();
     $('cartList').innerHTML = cart.map(function (x) {
@@ -509,6 +560,7 @@
         if (!f.location) { toast('Lokasi wajib diisi.', true); form.querySelector('[name=location]').focus(); return; }
       }
       drafts[flow] = f;
+      persistCarts();
       closeDialog();
       commitFlow(f);
     });
@@ -962,12 +1014,12 @@
   function bindEvents() {
     $('loginForm').addEventListener('submit', function (e) {
       e.preventDefault();
-      session = { user: $('loginUser').value.trim(), code: $('loginCode').value.trim() };
+      session = { unit: $('loginUnit').value || (units[0] && units[0].key), user: $('loginUser').value.trim(), code: $('loginCode').value.trim() };
       $('loginError').classList.add('hidden');
       bootstrap();
     });
     $('menuBtn').addEventListener('click', function () {
-      var d = openDialog('<h2>' + esc(state.me ? state.me.name : '') + '</h2><p class="muted small">' + esc(cfg.appName || 'Vortex Inventory') + ' · ' + esc(location.host) + '</p>' +
+      var d = openDialog('<h2>' + esc(state.me ? state.me.name : '') + '</h2><p class="muted small">' + esc(unitLabel()) + ' · ' + esc(location.host) + '</p>' +
         '<div class="actions" style="flex-direction:column"><button class="btn secondary" type="button" data-m="reload">Muat ulang data</button>' +
         '<button class="btn secondary" type="button" data-m="labels">Cetak label QR</button>' +
         '<button class="btn secondary" type="button" data-m="logout">Keluar</button><button class="btn" type="button" data-m="close">Tutup</button></div>');
@@ -1006,6 +1058,7 @@
         return;
       }
       groupTarget = next;
+      persistCarts();
     });
     $('groupSearch').addEventListener('input', renderGroupPick);
     $('groupPickList').addEventListener('click', function (e) {

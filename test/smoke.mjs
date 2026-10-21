@@ -81,6 +81,8 @@ await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`);
 check('scanning a box label adds its 16 members plus the box itself', (await evaluate(`inventoryApp.carts.out.length`)) === 18, 'cart=' + await evaluate(`inventoryApp.carts.out.length`));
 check('cart renders rows', (await evaluate(`document.querySelectorAll('#cartList .item').length`)) === 18);
 
+await send('Page.reload'); await sleep(1200);
+check('cart survives a page reload', (await evaluate(`inventoryApp.carts.out.length`)) === 18 && (await evaluate(`document.getElementById('page-scan').classList.contains('active')`)));
 check('newest scan is at the top of the cart', (await evaluate(`inventoryApp.carts.out[0].id`)) === '2-MVG-12-25-NY-BX.001' && (await evaluate(`inventoryApp.carts.out[17].id`)) === '1-MVG-12-25-NY-MD.030');
 await evaluate(`inventoryApp.saveFlow(); true`);
 await sleep(200);

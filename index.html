@@ -20,7 +20,7 @@
 <section id="setupView" class="main hidden">
   <div class="panel">
     <h1>Inventory Scanner belum dihubungkan</h1>
-    <p class="muted">Isi <code>apiUrl</code> di <code>config.js</code> dengan alamat web app Apps Script (berakhiran <code>/exec</code>). Langkahnya ada di README repositori.</p>
+    <p class="muted">Isi <code>units</code> di <code>config.js</code> dengan nama unit dan alamat web app Apps Script-nya (berakhiran <code>/exec</code>). Langkahnya ada di README repositori.</p>
   </div>
 </section>
 
@@ -30,6 +30,7 @@
     <img class="logo" src="vortex-logo.png" alt="Vortex">
     <h1 id="loginTitle">Inventory Scanner</h1>
     <p class="muted">Inventaris alat Vortex Media. Masuk dengan nama dan kode akses dari admin.</p>
+    <div id="loginUnitWrap" class="hidden"><label for="loginUnit">Unit</label><select id="loginUnit"></select></div>
     <label for="loginUser">Nama</label>
     <input id="loginUser" name="user" required autocapitalize="words" autocomplete="username">
     <label for="loginCode">Kode akses</label>
