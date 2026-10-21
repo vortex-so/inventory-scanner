@@ -18,7 +18,9 @@
     in: { action: 'MASUK', title: 'Keranjang Barang Masuk/Kembali', unit: 'unit' },
     group: { action: null, title: 'Keranjang Pengelompokan', unit: 'aset' }
   };
-  var PAGE_TITLES = { home: 'Beranda', scan: 'Scan', inventory: 'Data Inventaris', containers: 'Kabinet & Box', history: 'Riwayat', labels: 'Cetak QR' };
+  var PAGE_TITLES = { home: 'Dashboard', scan: 'Scan & Keranjang', inventory: 'Data Inventory', containers: 'Manajemen Kabinet & Box', history: 'Riwayat', labels: 'Cetak QR Code' };
+  var FLOW_NAMES = { check: 'Pengecekan Kondisi', out: 'Barang Keluar', in: 'Barang Masuk/Kembali', group: 'Kelompokkan ke Kabinet/Box' };
+  var lastRefresh = 0;
   var TYPE_LABELS = {
     'MODUL': 'Modul LED', 'BOX': 'Box / Case', 'POWER SUPPLY': 'Power Supply', 'MOBO': 'MOBO', 'BRACKET': 'Bracket',
     'POWER PANEL LISTRIK 3 PHASE': 'Power Panel Listrik 3 Phase', 'PROSESSOR': 'Prosessor', 'LIGHTING': 'Lighting',
@@ -129,8 +131,14 @@
       .finally(function () { if (!opts.silent) loading(false); });
   }
 
+  function refreshQuiet() {
+    lastRefresh = Date.now();
+    return api('bootstrap', {}, { silent: true }).then(applySnapshot).catch(function () { /* next focus will try again */ });
+  }
+
   function applySnapshot(d) {
     if (!d) return;
+    lastRefresh = Date.now();
     if (d.items) state.items = d.items;
     if (d.containers) state.containers = d.containers;
     if (d.stats) state.stats = d.stats;
@@ -145,6 +153,7 @@
   function init() {
     if (!cfg.apiUrl) { show('setupView'); return; }
     $('loginTitle').textContent = cfg.appName || 'Inventory Scanner';
+    $('brandName').textContent = (cfg.appName || 'Inventory Scanner').toUpperCase();
     document.title = cfg.appName || 'Inventory Scanner';
     try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { session = null; }
     bindEvents();
@@ -185,8 +194,15 @@
     page = name;
     document.querySelectorAll('.page').forEach(function (p) { p.classList.toggle('active', p.id === 'page-' + name); });
     document.querySelectorAll('#nav button').forEach(function (b) { b.classList.toggle('active', b.dataset.page === name); });
-    $('pageTitle').textContent = PAGE_TITLES[name] || name;
+    updateTitles();
     window.scrollTo(0, 0);
+  }
+  function updateTitles() {
+    $('pageTitle').textContent = page === 'scan' ? FLOW_NAMES[flow] : (PAGE_TITLES[page] || page);
+    $('pageSub').textContent = page === 'scan' ? 'Scan QR, isi keranjang, simpan. Satu halaman.' : 'Sistem manajemen aset, kondisi, dan perpindahan barang';
+    document.querySelectorAll('#sidebar .navbtn').forEach(function (b) {
+      b.classList.toggle('active', b.dataset.page === page && (!b.dataset.flow || b.dataset.flow === flow));
+    });
   }
 
   function setFlow(name) {
@@ -196,7 +212,9 @@
     ['check', 'out', 'in', 'group'].forEach(function (f) { $('form-' + f).classList.toggle('hidden', f !== name); });
     $('groupTargetWrap').classList.toggle('hidden', name !== 'group');
     $('groupPick').classList.toggle('hidden', name !== 'group');
-    $('saveBtn').textContent = name === 'group' ? 'Simpan ke wadah' : 'Simpan ' + (name === 'check' ? 'hasil pengecekan' : name === 'out' ? 'barang keluar' : 'barang masuk');
+    $('saveBtn').textContent = name === 'group' ? 'Simpan anggota ke Kabinet / Box' : 'Simpan ' + (name === 'check' ? 'hasil pengecekan' : name === 'out' ? 'barang keluar' : 'barang masuk/kembali');
+    $('scanHeading').textContent = 'Scan QR \u2014 ' + FLOW_NAMES[name];
+    updateTitles();
     renderCart();
     if (name === 'group') renderGroupPick();
   }
@@ -709,6 +727,9 @@
       });
     });
     document.querySelectorAll('#nav button').forEach(function (b) { b.addEventListener('click', function () { showPage(b.dataset.page); }); });
+    document.querySelectorAll('#sidebar .navbtn').forEach(function (b) {
+      b.addEventListener('click', function () { if (b.dataset.flow) setFlow(b.dataset.flow); showPage(b.dataset.page); });
+    });
     document.querySelectorAll('[data-go]').forEach(function (b) {
       b.addEventListener('click', function () { if (b.dataset.flow) setFlow(b.dataset.flow); showPage(b.dataset.go); });
     });
@@ -796,7 +817,11 @@
     $('labelClear').addEventListener('click', function () { labelSelected = {}; $('printArea').innerHTML = ''; renderLabels(); });
     $('labelPrint').addEventListener('click', printLabels);
 
-    document.addEventListener('visibilitychange', function () { if (document.hidden) stopCamera(); });
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { stopCamera(); return; }
+      // Coming back to this tab (e.g. after saving on a phone): re-read the sheet, at most once a minute.
+      if (session && state.me && Date.now() - lastRefresh > 60000) refreshQuiet();
+    });
     ['out', 'in'].forEach(function (f) { $('date-' + f).value = today(); });
   }
 

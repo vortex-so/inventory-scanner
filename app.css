@@ -81,6 +81,14 @@ td .btn { margin: 1px 0; }
 .list .item .ops { display: flex; flex-direction: column; gap: 4px; }
 .list .item .ops .btn { padding: 6px 8px; font-size: 12px; }
 
+@media (max-width: 640px) {
+  .list:not(.cart) .item { flex-wrap: wrap; }
+  .list:not(.cart) .item .info { flex: 1 1 100%; }
+  .list:not(.cart) .item .ops { flex: 1 1 100%; flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .list:not(.cart) .item .ops .row { flex: 0 0 auto; }
+}
+.wide { display: none; }
+
 /* scan screen */
 .flowtabs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
 .flowtabs button { border: 1px solid var(--line); background: #fff; color: var(--text); padding: 9px 4px; border-radius: 10px; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
@@ -139,3 +147,27 @@ dialog h2 { margin-bottom: 6px; }
   #page-labels { display: block !important; }
   .main { max-width: none; padding: 0; }
 }
+
+/* desktop: his sidebar and his groups; the bottom bar is for phones */
+.sidebar { display: none; }
+@media (min-width: 950px) {
+  #appView { display: grid; grid-template-columns: 235px minmax(0, 1fr); min-height: 100vh; }
+  #appView.hidden { display: none; }
+  .sidebar { display: block; background: #173b57; color: #fff; padding: 22px 14px; position: sticky; top: 0; height: 100vh; overflow: auto; }
+  .brand { font-size: 17px; font-weight: 800; margin: 0 8px 4px; letter-spacing: .3px; }
+  .subbrand { font-size: 12px; color: #cbd5e1; margin: 0 8px 24px; }
+  .navlist { display: flex; flex-direction: column; gap: 4px; }
+  .navgroup { margin: 6px 0 2px; }
+  .navgroup-title { font-size: 11px; font-weight: 700; color: #9fb1ca; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px 4px; }
+  .navgroup .navbtn { margin-left: 9px; padding-left: 11px; border-left: 1px solid #40536d; border-radius: 0 9px 9px 0; font-weight: 500; font-size: 14px; }
+  .navbtn { width: 100%; text-align: left; border: 1px solid transparent; background: transparent; color: #dbeafe; padding: 11px 12px; border-radius: 9px; cursor: pointer; font: inherit; font-weight: 600; }
+  .navbtn:hover, .navbtn.active { background: #ffffff20; color: #fff; }
+  .nav { display: none; }
+  body.has-nav { padding-bottom: 0; }
+  .toast { bottom: 20px; left: auto; right: 20px; transform: none; }
+  .savebar { bottom: 0; }
+  .scannerlayout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .9fr); gap: 14px; align-items: start; }
+  .flowtabs button { font-size: 14px; }
+  .wide { display: inline; }
+}
+

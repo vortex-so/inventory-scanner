@@ -39,8 +39,26 @@
 
 <!-- App -->
 <div id="appView" class="hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand" id="brandName">INVENTORY SCANNER</div><div class="subbrand">Asset &amp; Movement Management</div>
+    <div class="navlist">
+      <button type="button" class="navbtn" data-page="home">Dashboard</button>
+      <div class="navgroup"><div class="navgroup-title">Action</div>
+        <button type="button" class="navbtn" data-page="scan" data-flow="check">Pengecekan Kondisi</button>
+        <button type="button" class="navbtn" data-page="scan" data-flow="out">Barang Keluar</button>
+        <button type="button" class="navbtn" data-page="scan" data-flow="in">Barang Masuk/Kembali</button>
+      </div>
+      <div class="navgroup"><div class="navgroup-title">Tools</div>
+        <button type="button" class="navbtn" data-page="inventory">Data Inventory</button>
+        <button type="button" class="navbtn" data-page="containers">Manajemen Kabinet &amp; Box</button>
+        <button type="button" class="navbtn" data-page="labels">Cetak QR</button>
+      </div>
+      <button type="button" class="navbtn" data-page="history">Riwayat</button>
+    </div>
+  </aside>
+  <div class="content">
   <header class="topbar">
-    <div><h1 id="pageTitle">Beranda</h1></div>
+    <div><h1 id="pageTitle">Dashboard</h1><div class="small muted" id="pageSub">Sistem manajemen aset, kondisi, dan perpindahan barang</div></div>
     <div class="row" style="flex:0 0 auto">
       <div class="who"><strong id="whoName"></strong><span id="whoRole"></span></div>
       <button class="btn secondary small" id="menuBtn" aria-label="Menu">⋯</button>
@@ -52,9 +70,9 @@
     <section class="page" id="page-home">
       <div class="cards" id="statCards"></div>
       <div class="actions" style="margin:0 0 14px">
-        <button class="btn" data-go="scan" data-flow="check">Cek kondisi</button>
-        <button class="btn" data-go="scan" data-flow="out">Barang keluar</button>
-        <button class="btn" data-go="scan" data-flow="in">Barang masuk</button>
+        <button class="btn" data-go="scan" data-flow="check">Pengecekan Kondisi</button>
+        <button class="btn" data-go="scan" data-flow="out">Barang Keluar</button>
+        <button class="btn" data-go="scan" data-flow="in">Barang Masuk/Kembali</button>
       </div>
       <div class="panel"><div class="panel-head"><h2>Transaksi terbaru</h2><button class="btn secondary small" data-go="history">Semua riwayat</button></div><div id="homeRecent" class="tablewrap"></div></div>
       <div class="notice">Satu QR untuk setiap unit fisik. Kalau ada 100 modul, daftarkan sebagai 100 ID agar kondisi dan riwayat tiap modul bisa dilacak.</div>
@@ -62,13 +80,15 @@
 
     <section class="page" id="page-scan">
       <div class="flowtabs" id="flowTabs">
-        <button type="button" data-flow="check">Cek Kondisi<span class="count" id="count-check">0 unit</span></button>
-        <button type="button" data-flow="out">Keluar<span class="count" id="count-out">0 unit</span></button>
-        <button type="button" data-flow="in">Masuk<span class="count" id="count-in">0 unit</span></button>
-        <button type="button" data-flow="group">Kelompok<span class="count" id="count-group">0 aset</span></button>
+        <button type="button" data-flow="check">Pengecekan Kondisi<span class="count" id="count-check">0 unit</span></button>
+        <button type="button" data-flow="out">Barang Keluar<span class="count" id="count-out">0 unit</span></button>
+        <button type="button" data-flow="in">Barang Masuk/Kembali<span class="count" id="count-in">0 unit</span></button>
+        <button type="button" data-flow="group">Kelompokkan<span class="wide"> ke Kabinet/Box</span><span class="count" id="count-group">0 aset</span></button>
       </div>
 
+      <div class="scannerlayout">
       <div class="panel">
+        <h2 id="scanHeading">Scan QR</h2>
         <div id="groupTargetWrap" class="hidden">
           <label for="groupTarget">Kabinet / Box tujuan</label>
           <select id="groupTarget"><option value="">Pilih kabinet / box</option></select>
@@ -86,6 +106,7 @@
         </div>
       </div>
 
+      <div class="scancol">
       <div class="panel">
         <div class="panel-head"><h2 id="cartTitle">Keranjang</h2><button class="btn secondary small" id="cartClear" type="button">Kosongkan</button></div>
         <div id="cartList" class="list cart"></div>
@@ -132,6 +153,8 @@
         </div>
         <div class="savebar"><button class="btn success block" id="saveBtn" type="button">Simpan</button></div>
       </div>
+      </div>
+      </div>
     </section>
 
     <section class="page" id="page-inventory">
@@ -147,12 +170,12 @@
             <option value="nocabinet">Tanpa wadah</option>
           </select>
         </div>
-        <div id="inventoryCount" class="small muted" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:8px"><div id="inventoryCount" class="small muted"></div><button class="btn secondary small" type="button" data-go="labels" style="flex:0 0 auto">Cetak QR</button></div>
         <div id="inventoryList" class="list"></div>
         <div class="actions"><button class="btn secondary hidden" id="inventoryMore" type="button">Tampilkan lebih banyak</button></div>
       </div>
       <div class="panel" id="importPanel">
-        <div class="panel-head"><h2>Tambah aset</h2><button class="btn secondary small" id="importToggle" type="button">Buka</button></div>
+        <div class="panel-head"><h2>Tambah Aset</h2><button class="btn secondary small" id="importToggle" type="button">Buka</button></div>
         <form id="importForm" class="hidden">
           <p class="muted small">Untuk ID yang sudah tercetak di label. Satu ID per baris; ID dipertahankan apa adanya dan menjadi isi QR. Maksimal 2.000 ID per proses, duplikat dilewati.</p>
           <div class="formgrid">
@@ -169,7 +192,7 @@
 
     <section class="page" id="page-containers">
       <div class="panel">
-        <div class="panel-head"><h2>Daftar kabinet &amp; box</h2><button class="btn secondary small" id="containerFormToggle" type="button">+ Tambah wadah</button></div>
+        <div class="panel-head"><h2>Daftar Kabinet &amp; Box</h2><div class="row" style="flex:0 0 auto"><button class="btn secondary small" type="button" data-go="scan" data-flow="group">Kelompokkan aset</button><button class="btn secondary small" id="containerFormToggle" type="button">+ Tambah Kabinet / Box</button></div></div>
         <form id="containerForm" class="hidden" autocomplete="off">
           <div class="formgrid">
             <div><label>Jenis wadah *</label><select name="containerType" id="containerType" required><option value="">Pilih</option><option value="KABINET">Kabinet</option><option value="BOX">Box</option></select></div>
@@ -195,7 +218,7 @@
 
     <section class="page" id="page-labels">
       <div class="panel no-print">
-        <h2>Cetak label QR</h2>
+        <h2>Cetak label QR Code</h2>
         <p class="small muted">Pilih unit yang mau dicetak. Di dialog cetak pakai skala 100% / ukuran sebenarnya.</p>
         <div class="row"><input id="labelSearch" placeholder="Cari ID atau nama..."><select id="labelSize" style="flex:0 0 46%"><option value="15">QR 15 mm</option><option value="20">QR 20 mm</option><option value="25">QR 25 mm</option></select></div>
         <div class="actions"><button class="btn secondary" id="labelSelectAll" type="button">Pilih semua hasil</button><button class="btn secondary" id="labelClear" type="button">Hapus pilihan</button><button class="btn success" id="labelPrint" type="button">Buat label &amp; cetak</button></div>
@@ -208,12 +231,13 @@
   </main>
 
   <nav class="nav" id="nav">
-    <button type="button" data-page="home"><span class="ic">▦</span>Beranda</button>
+    <button type="button" data-page="home"><span class="ic">▦</span>Dashboard</button>
     <button type="button" data-page="scan"><span class="ic">▣</span>Scan</button>
-    <button type="button" data-page="inventory"><span class="ic">▤</span>Inventaris</button>
-    <button type="button" data-page="containers"><span class="ic">▧</span>Kabinet</button>
+    <button type="button" data-page="inventory"><span class="ic">▤</span>Inventory</button>
+    <button type="button" data-page="containers"><span class="ic">▧</span>Kabinet &amp; Box</button>
     <button type="button" data-page="history"><span class="ic">◷</span>Riwayat</button>
   </nav>
+  </div>
 </div>
 
 <dialog id="dlg"></dialog>

@@ -43,6 +43,11 @@ The URL stays the same.
 
 ## Everyday use
 
+- **Two layouts, one page.** On a laptop or tablet the app shows the sidebar of the original prototype
+  (Dashboard · Action · Tools · Riwayat) and the two-column scan screen; on a phone a bottom bar. Same
+  names, same forms. Each device finishes its own job: the phone scans and saves, and a desktop tab
+  re-reads the sheet when it comes back into focus (at most once a minute) or on ⋯ › Muat ulang data.
+
 - **Scan.** Pick the flow at the top (Cek Kondisi · Keluar · Masuk · Kelompok), start the camera, point
   at labels; each hit vibrates and appears in the cart. Typing an ID or a USB scanner's keystrokes into the
   field below the camera does the same. Fill the form, Save.
