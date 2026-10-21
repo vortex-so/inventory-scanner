@@ -153,7 +153,7 @@
   function init() {
     if (!cfg.apiUrl) { show('setupView'); return; }
     $('loginTitle').textContent = cfg.appName || 'Inventory Scanner';
-    $('brandName').textContent = (cfg.appName || 'Inventory Scanner').toUpperCase();
+    $('brandName').textContent = cfg.appName || 'Inventory Scanner';
     document.title = cfg.appName || 'Inventory Scanner';
     try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch (e) { session = null; }
     bindEvents();
@@ -167,6 +167,8 @@
       applySnapshot(d);
       $('whoName').textContent = state.me.name;
       $('whoRole').textContent = state.me.role === 'admin' ? 'admin' : 'operator';
+      $('whoAvatar').textContent = state.me.name.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
+      $('sideFoot').textContent = location.host;
       document.body.classList.toggle('is-admin', state.me.role === 'admin');
       $('importPanel').classList.toggle('hidden', state.me.role !== 'admin');
       show('appView');
@@ -245,6 +247,7 @@
         function () { /* no code in frame */ }
       ).then(function () {
         cameraOn = true;
+        $('viewfinder').classList.add('on');
         $('camStart').disabled = true;
         scanStatus('Kamera aktif. Arahkan ke QR.', '');
       }).catch(cameraFailed);
@@ -257,6 +260,7 @@
   }
   function stopCamera() {
     $('camStart').disabled = false;
+    $('viewfinder').classList.remove('on');
     if (!scanner || !cameraOn) return;
     cameraOn = false;
     scanner.stop().then(function () { scanner.clear(); }).catch(function () { /* already stopped */ });
@@ -493,8 +497,8 @@
     return '<table><thead><tr><th>Waktu</th><th>Tindakan</th><th>ID / Barang</th><th>Tanggal</th><th>Lokasi</th><th>Acara</th><th>Wadah</th><th>Oleh</th><th>Catatan</th></tr></thead><tbody>' +
       rows.map(function (t) {
         var extra = t.action === 'INSPEKSI' ? ' ' + pillCondition(t.condition) + (t.damage_note ? '<br><small>' + esc(t.damage_note) + '</small>' : '') : '';
-        return '<tr><td>' + esc(t.ts) + '</td><td>' + esc(t.action) + extra + '</td><td><strong>' + esc(t.item_id) + '</strong><br>' + esc(t.item_name) + '</td><td>' + esc(t.event_date) +
-          '</td><td>' + esc(t.location) + '</td><td>' + esc(t.event_name) + '</td><td>' + esc(t.cabinet_id || '-') + '</td><td>' + esc(t.user) + '</td><td>' + esc(t.note) + '</td></tr>';
+        return '<tr><td class="nowrap">' + esc(t.ts) + '</td><td>' + esc(t.action) + extra + '</td><td><strong>' + esc(t.item_id) + '</strong><br>' + esc(t.item_name) + '</td><td class="nowrap">' + esc(t.event_date) +
+          '</td><td>' + esc(t.location) + '</td><td>' + esc(t.event_name) + '</td><td class="nowrap">' + esc(t.cabinet_id || '-') + '</td><td>' + esc(t.user) + '</td><td>' + esc(t.note) + '</td></tr>';
       }).join('') + '</tbody></table>';
   }
 
@@ -521,7 +525,7 @@
     $('inventoryList').innerHTML = shown.map(function (x) {
       return '<div class="item"><div class="info"><strong>' + esc(x.id) + '</strong><div>' + esc(x.name) + ' <span class="muted">· ' + esc(typeLabel(x.type)) + (x.category ? ' · ' + esc(x.category) : '') + '</span></div>' +
         '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' +
-        (x.cabinetId ? '<span class="pill info">' + esc(x.cabinetId) + '</span>' : '') + (x.damageNote ? '<span class="muted">' + esc(x.damageNote) + '</span>' : '') + '</div></div>' +
+        (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + (x.damageNote ? '<span class="muted">' + esc(x.damageNote) + '</span>' : '') + '</div></div>' +
         '<div class="ops"><div class="row" style="gap:4px"><button class="btn secondary small" type="button" data-cart="check" data-id="' + esc(x.id) + '">Cek</button>' +
         '<button class="btn secondary small" type="button" data-cart="out" data-id="' + esc(x.id) + '">OUT</button><button class="btn secondary small" type="button" data-cart="in" data-id="' + esc(x.id) + '">IN</button></div>' +
         '<div class="row" style="gap:4px"><button class="btn secondary small" type="button" data-history="' + esc(x.id) + '">Riwayat</button>' +

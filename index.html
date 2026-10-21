@@ -26,6 +26,7 @@
 <!-- Login -->
 <section id="loginView" class="main hidden">
   <form class="login panel" id="loginForm" autocomplete="off">
+    <div class="mark"><svg class="i" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></div>
     <h1 id="loginTitle">Inventory Scanner</h1>
     <p class="muted">Masuk dengan nama dan kode akses yang diberikan admin.</p>
     <label for="loginUser">Nama</label>
@@ -40,28 +41,30 @@
 <!-- App -->
 <div id="appView" class="hidden">
   <aside class="sidebar" id="sidebar">
-    <div class="brand" id="brandName">INVENTORY SCANNER</div><div class="subbrand">Asset &amp; Movement Management</div>
+    <div class="brandrow"><div class="mark"><svg class="i" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></div><div><div class="brand" id="brandName">Inventory Scanner</div><div class="subbrand">Asset &amp; movement</div></div></div>
     <div class="navlist">
-      <button type="button" class="navbtn" data-page="home">Dashboard</button>
+      <button type="button" class="navbtn" data-page="home"><svg class="i" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/></svg>Dashboard</button>
       <div class="navgroup"><div class="navgroup-title">Action</div>
-        <button type="button" class="navbtn" data-page="scan" data-flow="check">Pengecekan Kondisi</button>
-        <button type="button" class="navbtn" data-page="scan" data-flow="out">Barang Keluar</button>
-        <button type="button" class="navbtn" data-page="scan" data-flow="in">Barang Masuk/Kembali</button>
+        <button type="button" class="navbtn" data-page="scan" data-flow="check"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>Pengecekan Kondisi</button>
+        <button type="button" class="navbtn" data-page="scan" data-flow="out"><svg class="i" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M9 7h8v8"/></svg>Barang Keluar</button>
+        <button type="button" class="navbtn" data-page="scan" data-flow="in"><svg class="i" viewBox="0 0 24 24"><path d="M17 7 7 17"/><path d="M15 17H7V9"/></svg>Barang Masuk/Kembali</button>
       </div>
       <div class="navgroup"><div class="navgroup-title">Tools</div>
-        <button type="button" class="navbtn" data-page="inventory">Data Inventory</button>
-        <button type="button" class="navbtn" data-page="containers">Manajemen Kabinet &amp; Box</button>
-        <button type="button" class="navbtn" data-page="labels">Cetak QR</button>
+        <button type="button" class="navbtn" data-page="inventory"><svg class="i" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>Data Inventory</button>
+        <button type="button" class="navbtn" data-page="containers"><svg class="i" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg>Manajemen Kabinet &amp; Box</button>
+        <button type="button" class="navbtn" data-page="labels"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h3v3M20 14v2M17 20h3M14 20h.01"/></svg>Cetak QR</button>
       </div>
-      <button type="button" class="navbtn" data-page="history">Riwayat</button>
+      <button type="button" class="navbtn" data-page="history"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Riwayat</button>
     </div>
+    <div class="sidefoot" id="sideFoot"></div>
   </aside>
   <div class="content">
   <header class="topbar">
     <div><h1 id="pageTitle">Dashboard</h1><div class="small muted" id="pageSub">Sistem manajemen aset, kondisi, dan perpindahan barang</div></div>
-    <div class="row" style="flex:0 0 auto">
-      <div class="who"><strong id="whoName"></strong><span id="whoRole"></span></div>
-      <button class="btn secondary small" id="menuBtn" aria-label="Menu">⋯</button>
+    <div class="who">
+      <div class="txt"><strong id="whoName"></strong><span id="whoRole"></span></div>
+      <span class="avatar" id="whoAvatar"></span>
+      <button class="iconbtn" id="menuBtn" aria-label="Menu" type="button"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
     </div>
   </header>
 
@@ -69,10 +72,10 @@
 
     <section class="page" id="page-home">
       <div class="cards" id="statCards"></div>
-      <div class="actions" style="margin:0 0 14px">
-        <button class="btn" data-go="scan" data-flow="check">Pengecekan Kondisi</button>
-        <button class="btn" data-go="scan" data-flow="out">Barang Keluar</button>
-        <button class="btn" data-go="scan" data-flow="in">Barang Masuk/Kembali</button>
+      <div class="actions inline" style="margin:0 0 14px">
+        <button class="btn secondary" data-go="scan" data-flow="check"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>Pengecekan Kondisi</button>
+        <button class="btn secondary" data-go="scan" data-flow="out"><svg class="i" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M9 7h8v8"/></svg>Barang Keluar</button>
+        <button class="btn secondary" data-go="scan" data-flow="in"><svg class="i" viewBox="0 0 24 24"><path d="M17 7 7 17"/><path d="M15 17H7V9"/></svg>Barang Masuk/Kembali</button>
       </div>
       <div class="panel"><div class="panel-head"><h2>Transaksi terbaru</h2><button class="btn secondary small" data-go="history">Semua riwayat</button></div><div id="homeRecent" class="tablewrap"></div></div>
       <div class="notice">Satu QR untuk setiap unit fisik. Kalau ada 100 modul, daftarkan sebagai 100 ID agar kondisi dan riwayat tiap modul bisa dilacak.</div>
@@ -94,7 +97,7 @@
           <select id="groupTarget"><option value="">Pilih kabinet / box</option></select>
           <p class="small muted" style="margin-top:6px">Atau scan label box/kabinet dulu, lalu scan isinya.</p>
         </div>
-        <div id="reader"></div>
+        <div class="viewfinder" id="viewfinder"><div id="reader"></div><div class="corners"><i></i></div><div class="hint">Kamera belum aktif</div></div>
         <div class="actions" style="margin-top:10px">
           <button class="btn" id="camStart" type="button">Mulai kamera</button>
           <button class="btn secondary" id="camStop" type="button">Hentikan</button>
@@ -231,11 +234,11 @@
   </main>
 
   <nav class="nav" id="nav">
-    <button type="button" data-page="home"><span class="ic">▦</span>Dashboard</button>
-    <button type="button" data-page="scan"><span class="ic">▣</span>Scan</button>
-    <button type="button" data-page="inventory"><span class="ic">▤</span>Inventory</button>
-    <button type="button" data-page="containers"><span class="ic">▧</span>Kabinet &amp; Box</button>
-    <button type="button" data-page="history"><span class="ic">◷</span>Riwayat</button>
+    <button type="button" data-page="home"><svg class="i" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/></svg>Dashboard</button>
+    <button type="button" data-page="scan"><svg class="i" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg>Scan</button>
+    <button type="button" data-page="inventory"><svg class="i" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12"/><path d="M4 6h.01M4 12h.01M4 18h.01"/></svg>Inventory</button>
+    <button type="button" data-page="containers"><svg class="i" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg>Kabinet &amp; Box</button>
+    <button type="button" data-page="history"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Riwayat</button>
   </nav>
   </div>
 </div>
