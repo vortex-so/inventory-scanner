@@ -65,6 +65,13 @@ check('filter "Di luar" works', (await evaluate(`document.querySelectorAll('#inv
 await evaluate(`document.getElementById('inventoryFilter').value=''; document.getElementById('inventorySearch').value='psu'; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); true`);
 check('search works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 6);
 
+await evaluate(`document.getElementById('inventorySearch').value=''; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); document.querySelector('#inventoryList [data-open]').click(); true`);
+await sleep(150);
+check('tapping a row opens the action sheet', (await evaluate(`document.getElementById('dlg').open && document.querySelectorAll('#dlg .sheet-grid button').length`)) === 6);
+await evaluate(`document.querySelector('#dlg [data-a="close"]').click(); document.getElementById('importBtn').click(); true`);
+await sleep(150);
+check('Tambah Aset opens a form dialog', (await evaluate(`document.getElementById('dlg').open && !!document.querySelector('#dlg textarea[name=ids]')`)) === true);
+await evaluate(`document.querySelector('#dlg [data-r="0"]').click(); true`);
 await evaluate(`inventoryApp.setFlow('out'); inventoryApp.showPage('scan'); true`);
 check('scan page active', await evaluate(`document.getElementById('page-scan').classList.contains('active')`));
 check('scan unknown code is refused', (await evaluate(`inventoryApp.handleCode('NOPE-123')`)) === false);

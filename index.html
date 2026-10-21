@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#2563eb">
+  <meta name="theme-color" content="#0c0c0d">
+  <meta name="color-scheme" content="dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Inventory">
-  <title>Inventory Scanner</title>
+  <title>Vortex Inventory</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="app.css">
 </head>
@@ -26,9 +27,9 @@
 <!-- Login -->
 <section id="loginView" class="main hidden">
   <form class="login panel" id="loginForm" autocomplete="off">
-    <div class="mark"><svg class="i" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></div>
+    <img class="logo" src="vortex-logo.png" alt="Vortex">
     <h1 id="loginTitle">Inventory Scanner</h1>
-    <p class="muted">Masuk dengan nama dan kode akses yang diberikan admin.</p>
+    <p class="muted">Inventaris alat Vortex Media. Masuk dengan nama dan kode akses dari admin.</p>
     <label for="loginUser">Nama</label>
     <input id="loginUser" name="user" required autocapitalize="words" autocomplete="username">
     <label for="loginCode">Kode akses</label>
@@ -41,7 +42,7 @@
 <!-- App -->
 <div id="appView" class="hidden">
   <aside class="sidebar" id="sidebar">
-    <div class="brandrow"><div class="mark"><svg class="i" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M4 12h16"/></svg></div><div><div class="brand" id="brandName">Inventory Scanner</div><div class="subbrand">Asset &amp; movement</div></div></div>
+    <div class="brandrow"><img class="logo" src="vortex-logo.png" alt="Vortex"><div class="subbrand" id="brandName">Inventory · Media</div></div>
     <div class="navlist">
       <button type="button" class="navbtn" data-page="home"><svg class="i" viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/></svg>Dashboard</button>
       <div class="navgroup"><div class="navgroup-title">Action</div>
@@ -60,10 +61,11 @@
   </aside>
   <div class="content">
   <header class="topbar">
-    <div><h1 id="pageTitle">Dashboard</h1><div class="small muted" id="pageSub">Sistem manajemen aset, kondisi, dan perpindahan barang</div></div>
+    <div class="titles"><img class="mark-sm" src="vortex-mark.png" alt=""><div><h1 id="pageTitle">Dashboard</h1><div class="small muted" id="pageSub"></div></div></div>
     <div class="who">
       <div class="txt"><strong id="whoName"></strong><span id="whoRole"></span></div>
       <span class="avatar" id="whoAvatar"></span>
+      <button class="iconbtn" id="refreshBtn" aria-label="Muat ulang data" title="Muat ulang data" type="button"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg></button>
       <button class="iconbtn" id="menuBtn" aria-label="Menu" type="button"><svg class="i" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/></svg></button>
     </div>
   </header>
@@ -163,8 +165,8 @@
     <section class="page" id="page-inventory">
       <div class="panel">
         <div class="row">
-          <input id="inventorySearch" placeholder="Cari ID, nama, kategori, kabinet...">
-          <select id="inventoryFilter" style="flex:0 0 42%">
+          <div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="inventorySearch" placeholder="Cari ID, nama, kategori, kabinet..."></div>
+          <select id="inventoryFilter" style="flex:0 0 38%">
             <option value="">Semua</option>
             <option value="in">Di gudang</option>
             <option value="out">Di luar</option>
@@ -173,23 +175,14 @@
             <option value="nocabinet">Tanpa wadah</option>
           </select>
         </div>
-        <div class="row" style="margin-top:8px"><div id="inventoryCount" class="small muted"></div><button class="btn secondary small" type="button" data-go="labels" style="flex:0 0 auto">Cetak QR</button></div>
-        <div id="inventoryList" class="list"></div>
-        <div class="actions"><button class="btn secondary hidden" id="inventoryMore" type="button">Tampilkan lebih banyak</button></div>
-      </div>
-      <div class="panel" id="importPanel">
-        <div class="panel-head"><h2>Tambah Aset</h2><button class="btn secondary small" id="importToggle" type="button">Buka</button></div>
-        <form id="importForm" class="hidden">
-          <p class="muted small">Untuk ID yang sudah tercetak di label. Satu ID per baris; ID dipertahankan apa adanya dan menjadi isi QR. Maksimal 2.000 ID per proses, duplikat dilewati.</p>
-          <div class="formgrid">
-            <div><label>Jenis barang *</label><select name="type" id="importType" required></select></div>
-            <div><label>Nama barang *</label><input name="name" required placeholder="Contoh: Modul LED P2.9"></div>
-            <div><label>Kategori</label><input name="category" placeholder="Contoh: LED Screen"></div>
-            <div><label>Lokasi awal</label><input name="location" value="Gudang"></div>
-            <div class="full"><label>Daftar ID *</label><textarea name="ids" rows="8" required placeholder="1-MVG-12-25-NY-MD.001&#10;1-MVG-12-25-NY-MD.002"></textarea></div>
+        <div class="toolbar">
+          <div id="inventoryCount" class="small muted"></div>
+          <div class="btns">
+            <button class="btn secondary small" type="button" data-go="labels"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><path d="M14 14h3v3M20 14v2M17 20h3M14 20h.01"/></svg>Cetak QR</button>
+            <button class="btn small hidden" type="button" id="importBtn"><svg class="i" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Tambah Aset</button>
           </div>
-          <div class="actions"><button class="btn" type="submit">Tambah aset</button></div>
-        </form>
+        </div>
+        <div id="inventoryList" class="list"></div>
       </div>
     </section>
 
@@ -213,7 +206,7 @@
 
     <section class="page" id="page-history">
       <div class="panel">
-        <div class="row"><input id="historySearch" placeholder="Cari ID, acara, lokasi, pengguna..."><select id="historyAction" style="flex:0 0 38%"><option value="">Semua</option><option>KELUAR</option><option>MASUK</option><option>INSPEKSI</option><option>KELOMPOK</option><option>LEPAS</option><option>IMPORT</option><option>EDIT</option><option>NONAKTIF</option></select></div>
+        <div class="row"><div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="historySearch" placeholder="Cari ID, acara, lokasi, pengguna..."></div><select id="historyAction" style="flex:0 0 38%"><option value="">Semua</option><option>KELUAR</option><option>MASUK</option><option>INSPEKSI</option><option>KELOMPOK</option><option>LEPAS</option><option>IMPORT</option><option>EDIT</option><option>NONAKTIF</option></select></div>
         <div id="historyCount" class="small muted" style="margin-top:8px"></div>
         <div id="historyTable" class="tablewrap" style="margin-top:8px"></div>
       </div>
@@ -223,7 +216,7 @@
       <div class="panel no-print">
         <h2>Cetak label QR Code</h2>
         <p class="small muted">Pilih unit yang mau dicetak. Di dialog cetak pakai skala 100% / ukuran sebenarnya.</p>
-        <div class="row"><input id="labelSearch" placeholder="Cari ID atau nama..."><select id="labelSize" style="flex:0 0 46%"><option value="15">QR 15 mm</option><option value="20">QR 20 mm</option><option value="25">QR 25 mm</option></select></div>
+        <div class="row"><div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="labelSearch" placeholder="Cari ID atau nama..."></div><select id="labelSize" style="flex:0 0 46%"><option value="15">QR 15 mm</option><option value="20">QR 20 mm</option><option value="25">QR 25 mm</option></select></div>
         <div class="actions"><button class="btn secondary" id="labelSelectAll" type="button">Pilih semua hasil</button><button class="btn secondary" id="labelClear" type="button">Hapus pilihan</button><button class="btn success" id="labelPrint" type="button">Buat label &amp; cetak</button></div>
         <div id="labelCount" class="small muted" style="margin-top:8px"></div>
         <div id="labelList" class="list"></div>
@@ -245,6 +238,7 @@
 
 <dialog id="dlg"></dialog>
 <div id="toast" class="toast"></div>
+<div id="ptr" class="ptr"><span class="spinner"></span><span id="ptrText">Tarik untuk memperbarui</span></div>
 <div id="loading"><div class="box"><div class="spinner"></div><div id="loadingText">Memuat...</div></div></div>
 
 <script src="vendor/html5-qrcode.min.js"></script>

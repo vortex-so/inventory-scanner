@@ -12,6 +12,17 @@
     });
   };
 
+  var ICON = {
+    check: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>',
+    out: '<svg class="i" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M9 7h8v8"/></svg>',
+    inn: '<svg class="i" viewBox="0 0 24 24"><path d="M17 7 7 17"/><path d="M15 17H7V9"/></svg>',
+    clock: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    edit: '<svg class="i" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+    trash: '<svg class="i" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>',
+    box: '<svg class="i" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5"/><path d="M12 12v9"/></svg>',
+    chev: '<svg class="i chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>'
+  };
+
   var FLOWS = {
     check: { action: 'INSPEKSI', title: 'Keranjang Pengecekan Kondisi', unit: 'unit' },
     out: { action: 'KELUAR', title: 'Keranjang Barang Keluar', unit: 'unit' },
@@ -41,7 +52,6 @@
   var page = 'home';
   var scanner = null, cameraOn = false, lastCode = '', lastAt = 0;
   var labelSelected = {};
-  var inventoryShown = 150;
 
   // ---------- small UI helpers ----------
 
@@ -68,6 +78,38 @@
   function show(viewId) {
     ['setupView', 'loginView', 'appView'].forEach(function (id) { $(id).classList.toggle('hidden', id !== viewId); });
     document.body.classList.toggle('has-nav', viewId === 'appView');
+  }
+
+  // Renders a list in chunks as the user scrolls. The data is already in memory; only the DOM is lazy.
+  function lazyList(host, items, renderOne, opts) {
+    opts = opts || {};
+    var chunk = opts.chunk || 60, isRow = opts.row === 'tr', i = 0;
+    if (host._lazy) { host._lazy.disconnect(); host._lazy = null; }
+    host.innerHTML = '';
+    if (!items.length) { host.innerHTML = opts.empty || '<div class="empty">Tidak ada data.</div>'; return; }
+    var sentinel = document.createElement(isRow ? 'tr' : 'div');
+    sentinel.className = 'sentinel';
+    if (isRow) sentinel.innerHTML = '<td colspan="99"></td>';
+    host.appendChild(sentinel);
+    var tmp = document.createElement(isRow ? 'tbody' : 'div');
+    function more() {
+      var end = Math.min(items.length, i + chunk), html = '';
+      for (; i < end; i++) html += renderOne(items[i]);
+      tmp.innerHTML = html;
+      var frag = document.createDocumentFragment();
+      while (tmp.firstElementChild) frag.appendChild(tmp.firstElementChild);
+      host.insertBefore(frag, sentinel);
+      if (i >= items.length) { sentinel.remove(); if (host._lazy) { host._lazy.disconnect(); host._lazy = null; } }
+    }
+    more();
+    if (i < items.length) {
+      if ('IntersectionObserver' in window) {
+        host._lazy = new IntersectionObserver(function (entries) {
+          if (entries.some(function (e) { return e.isIntersecting; })) more();
+        }, { rootMargin: '600px 0px' });
+        host._lazy.observe(sentinel);
+      } else { while (i < items.length) more(); }
+    }
   }
 
   function openDialog(html) {
@@ -131,9 +173,14 @@
       .finally(function () { if (!opts.silent) loading(false); });
   }
 
-  function refreshQuiet() {
+  function refreshQuiet(announce) {
     lastRefresh = Date.now();
-    return api('bootstrap', {}, { silent: true }).then(applySnapshot).catch(function () { /* next focus will try again */ });
+    var b = $('refreshBtn');
+    if (b) b.classList.add('spin');
+    return api('bootstrap', {}, { silent: true })
+      .then(function (d) { applySnapshot(d); if (announce) toast('Data diperbarui.'); })
+      .catch(function (e) { if (announce) toast(e.message, true); })
+      .then(function () { if (b) b.classList.remove('spin'); });
   }
 
   function applySnapshot(d) {
@@ -146,6 +193,7 @@
     if (d.types && d.types.length) state.types = d.types;
     if (d.me) state.me = d.me;
     renderAll();
+    if (state.me) updateTitles();
   }
 
   // ---------- login ----------
@@ -170,7 +218,7 @@
       $('whoAvatar').textContent = state.me.name.split(/\s+/).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
       $('sideFoot').textContent = location.host;
       document.body.classList.toggle('is-admin', state.me.role === 'admin');
-      $('importPanel').classList.toggle('hidden', state.me.role !== 'admin');
+      $('importBtn').classList.toggle('hidden', state.me.role !== 'admin');
       show('appView');
       showPage(page);
     }).catch(function (e) {
@@ -201,7 +249,9 @@
   }
   function updateTitles() {
     $('pageTitle').textContent = page === 'scan' ? FLOW_NAMES[flow] : (PAGE_TITLES[page] || page);
-    $('pageSub').textContent = page === 'scan' ? 'Scan QR, isi keranjang, simpan. Satu halaman.' : 'Sistem manajemen aset, kondisi, dan perpindahan barang';
+    var t = lastRefresh ? new Date(lastRefresh) : null;
+    var stamp = t ? 'Diperbarui ' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) : '';
+    $('pageSub').textContent = page === 'scan' ? 'Scan QR, isi keranjang, simpan. Satu halaman.' : stamp;
     document.querySelectorAll('#sidebar .navbtn').forEach(function (b) {
       b.classList.toggle('active', b.dataset.page === page && (!b.dataset.flow || b.dataset.flow === flow));
     });
@@ -345,7 +395,11 @@
   }
 
   function renderCart() {
-    Object.keys(FLOWS).forEach(function (f) { $('count-' + f).textContent = carts[f].length + ' ' + FLOWS[f].unit; });
+    Object.keys(FLOWS).forEach(function (f) {
+      $('count-' + f).textContent = carts[f].length + ' ' + FLOWS[f].unit;
+      var tab = document.querySelector('#flowTabs [data-flow="' + f + '"]');
+      if (tab) tab.classList.toggle('has', carts[f].length > 0);
+    });
     var cart = carts[flow];
     $('cartTitle').textContent = FLOWS[flow].title + ' · ' + cart.length;
     if (!cart.length) { $('cartList').innerHTML = '<div class="empty">Belum ada barang. Scan QR, ketik ID, atau pilih dari daftar inventaris.</div>'; return; }
@@ -480,27 +534,25 @@
     renderLabels();
     renderCart();
     renderGroupPick();
-    fillTypeSelect();
   }
 
   function renderHome() {
     var s = state.stats || {};
-    var cards = [['Total unit aktif', s.total], ['Kondisi baik', s.good], ['Kondisi rusak', s.damaged], ['Belum dicek', s.unchecked],
-      ['Sedang di luar', s.out], ['Tersedia di gudang', s.inWarehouse], ['Kabinet / Box', s.boxes]];
+    var cards = [['Total unit aktif', s.total, ''], ['Kondisi baik', s.good, 'ok'], ['Kondisi rusak', s.damaged, s.damaged ? 'bad' : ''], ['Belum dicek', s.unchecked, ''],
+      ['Sedang di luar', s.out, s.out ? 'hot' : ''], ['Tersedia di gudang', s.inWarehouse, ''], ['Kabinet / Box', s.boxes, '']];
     $('statCards').innerHTML = cards.map(function (c) {
-      return '<div class="card"><div class="label">' + c[0] + '</div><div class="num">' + Number(c[1] || 0).toLocaleString('id-ID') + '</div></div>';
+      return '<div class="card ' + c[2] + '"><div class="label">' + c[0] + '</div><div class="num">' + Number(c[1] || 0).toLocaleString('id-ID') + '</div></div>';
     }).join('');
     $('homeRecent').innerHTML = state.transactions.length ? txnTable(state.transactions.slice(0, 8)) : '<div class="empty">Belum ada transaksi.</div>';
   }
 
-  function txnTable(rows) {
-    return '<table><thead><tr><th>Waktu</th><th>Tindakan</th><th>ID / Barang</th><th>Tanggal</th><th>Lokasi</th><th>Acara</th><th>Wadah</th><th>Oleh</th><th>Catatan</th></tr></thead><tbody>' +
-      rows.map(function (t) {
-        var extra = t.action === 'INSPEKSI' ? ' ' + pillCondition(t.condition) + (t.damage_note ? '<br><small>' + esc(t.damage_note) + '</small>' : '') : '';
-        return '<tr><td class="nowrap">' + esc(t.ts) + '</td><td>' + esc(t.action) + extra + '</td><td><strong>' + esc(t.item_id) + '</strong><br>' + esc(t.item_name) + '</td><td class="nowrap">' + esc(t.event_date) +
-          '</td><td>' + esc(t.location) + '</td><td>' + esc(t.event_name) + '</td><td class="nowrap">' + esc(t.cabinet_id || '-') + '</td><td>' + esc(t.user) + '</td><td>' + esc(t.note) + '</td></tr>';
-      }).join('') + '</tbody></table>';
+  var TXN_HEAD = '<thead><tr><th>Waktu</th><th>Tindakan</th><th>ID / Barang</th><th>Tanggal</th><th>Lokasi</th><th>Acara</th><th>Wadah</th><th>Oleh</th><th>Catatan</th></tr></thead>';
+  function txnRow(t) {
+    var extra = t.action === 'INSPEKSI' ? ' ' + pillCondition(t.condition) + (t.damage_note ? '<br><small>' + esc(t.damage_note) + '</small>' : '') : '';
+    return '<tr><td class="nowrap">' + esc(t.ts) + '</td><td>' + esc(t.action) + extra + '</td><td><strong>' + esc(t.item_id) + '</strong><br>' + esc(t.item_name) + '</td><td class="nowrap">' + esc(t.event_date) +
+      '</td><td>' + esc(t.location) + '</td><td>' + esc(t.event_name) + '</td><td class="nowrap">' + esc(t.cabinet_id || '-') + '</td><td>' + esc(t.user) + '</td><td>' + esc(t.note) + '</td></tr>';
   }
+  function txnTable(rows) { return '<table>' + TXN_HEAD + '<tbody>' + rows.map(txnRow).join('') + '</tbody></table>'; }
 
   function inventoryMatches() {
     var q = $('inventorySearch').value.trim().toLowerCase();
@@ -517,43 +569,81 @@
   }
   function renderInventory() {
     var list = inventoryMatches();
-    var shown = list.slice(0, inventoryShown);
-    var admin = state.me && state.me.role === 'admin';
     $('inventoryCount').textContent = list.length + ' dari ' + state.items.length + ' unit aktif';
-    $('inventoryMore').classList.toggle('hidden', list.length <= shown.length);
-    if (!shown.length) { $('inventoryList').innerHTML = '<div class="empty">Tidak ada barang yang cocok.</div>'; return; }
-    $('inventoryList').innerHTML = shown.map(function (x) {
-      return '<div class="item"><div class="info"><strong>' + esc(x.id) + '</strong><div>' + esc(x.name) + ' <span class="muted">· ' + esc(typeLabel(x.type)) + (x.category ? ' · ' + esc(x.category) : '') + '</span></div>' +
-        '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' +
-        (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + (x.damageNote ? '<span class="muted">' + esc(x.damageNote) + '</span>' : '') + '</div></div>' +
-        '<div class="ops"><div class="row" style="gap:4px"><button class="btn secondary small" type="button" data-cart="check" data-id="' + esc(x.id) + '">Cek</button>' +
-        '<button class="btn secondary small" type="button" data-cart="out" data-id="' + esc(x.id) + '">OUT</button><button class="btn secondary small" type="button" data-cart="in" data-id="' + esc(x.id) + '">IN</button></div>' +
-        '<div class="row" style="gap:4px"><button class="btn secondary small" type="button" data-history="' + esc(x.id) + '">Riwayat</button>' +
-        (admin ? '<button class="btn secondary small" type="button" data-edit="' + esc(x.id) + '">Edit</button><button class="btn danger small" type="button" data-deactivate="' + esc(x.id) + '">Hapus</button>' : '') +
-        '</div></div></div>';
-    }).join('');
+    lazyList($('inventoryList'), list, itemRow, { empty: '<div class="empty">Tidak ada barang yang cocok.</div>' });
   }
-
-  function fillTypeSelect() {
-    var sel = $('importType');
-    var current = sel.value;
-    sel.innerHTML = state.types.map(function (t) { return '<option value="' + esc(t) + '">' + esc(typeLabel(t)) + '</option>'; }).join('');
-    if (current) sel.value = current;
+  function itemRow(x) {
+    return '<div class="item tap" data-open="' + esc(x.id) + '" role="button" tabindex="0"><div class="info"><strong>' + esc(x.id) + '</strong><div>' + esc(x.name) +
+      ' <span class="muted">· ' + esc(typeLabel(x.type)) + (x.category ? ' · ' + esc(x.category) : '') + '</span></div>' +
+      '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' +
+      (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + (x.damageNote ? '<span class="muted">' + esc(x.damageNote) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
+  }
+  /** Tap a row: one sheet with everything you can do with the item. */
+  function itemSheet(id) {
+    var x = state.items.filter(function (i) { return i.id === id; })[0];
+    if (!x) return;
+    var admin = state.me && state.me.role === 'admin';
+    var isOut = x.locationStatus === 'DI LUAR';
+    var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(x.id) + '</h2><div>' + esc(x.name) + ' <span class="muted">· ' + esc(typeLabel(x.type)) + (x.category ? ' · ' + esc(x.category) : '') + '</span></div>' +
+      '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' + (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + '</div>' +
+      (x.damageNote ? '<p class="small muted" style="margin:6px 0 0">' + esc(x.damageNote) + '</p>' : '') +
+      (x.lastUser ? '<p class="small muted" style="margin:6px 0 0">Terakhir: ' + esc(x.updatedAt) + ' oleh ' + esc(x.lastUser) + '</p>' : '') + '</div></div>' +
+      '<div class="sheet-grid">' +
+      '<button class="btn secondary" type="button" data-a="check">' + ICON.check + 'Pengecekan Kondisi</button>' +
+      '<button class="btn secondary" type="button" data-a="history">' + ICON.clock + 'Riwayat</button>' +
+      '<button class="btn secondary" type="button" data-a="out"' + (isOut ? ' disabled' : '') + '>' + ICON.out + 'Barang Keluar</button>' +
+      '<button class="btn secondary" type="button" data-a="in"' + (isOut ? '' : ' disabled') + '>' + ICON.inn + 'Barang Masuk</button>' +
+      (admin ? '<button class="btn secondary" type="button" data-a="edit">' + ICON.edit + 'Edit</button><button class="btn danger" type="button" data-a="deactivate">' + ICON.trash + 'Nonaktifkan</button>' : '') +
+      '</div><button class="btn secondary block sheet-close" type="button" data-a="close">Tutup</button>');
+    d.querySelectorAll('[data-a]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var a = b.dataset.a;
+        closeDialog();
+        if (a === 'check' || a === 'out' || a === 'in') {
+          setFlow(a);
+          var added = pushCart(x, a, '');
+          showPage('scan');
+          toast(added ? x.id + ' masuk keranjang ' + FLOW_NAMES[a] + '.' : x.id + ' sudah ada di keranjang.', !added);
+        }
+        if (a === 'history') showHistory(x.id);
+        if (a === 'edit') editItem(x.id);
+        if (a === 'deactivate') deactivateItem(x.id);
+      });
+    });
   }
 
   function renderContainers() {
-    var list = state.containers;
-    if (!list.length) { $('containerList').innerHTML = '<div class="empty">Belum ada kabinet/box. Tambah wadah dulu, lalu kelompokkan asetnya lewat Scan › Kelompok.</div>'; return; }
-    $('containerList').innerHTML = list.map(function (c) {
-      var disabled = c.itemCount ? '' : ' disabled';
-      return '<div class="item"><div class="info"><strong>' + esc(c.cabinetId) + ' <span class="pill">' + (c.containerType === 'BOX' ? 'Box' : 'Kabinet') + '</span></strong>' +
-        '<div>' + esc(c.name) + (c.category ? ' <span class="muted">· ' + esc(c.category) + '</span>' : '') + '</div>' +
-        '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.damagedCount ? '<span class="pill bad">' + c.damagedCount + ' rusak</span>' : '') +
-        (c.outCount ? '<span class="pill out">' + c.outCount + ' di luar</span>' : '') + (c.note ? '<span class="muted">' + esc(c.note) + '</span>' : '') + '</div></div>' +
-        '<div class="ops"><div class="row" style="gap:4px"><button class="btn secondary small" type="button" data-ccart="check" data-cid="' + esc(c.cabinetId) + '"' + disabled + '>Cek</button>' +
-        '<button class="btn secondary small" type="button" data-ccart="out" data-cid="' + esc(c.cabinetId) + '"' + disabled + '>OUT</button><button class="btn secondary small" type="button" data-ccart="in" data-cid="' + esc(c.cabinetId) + '"' + disabled + '>IN</button></div>' +
-        '<div class="row" style="gap:4px"><button class="btn secondary small" type="button" data-group="' + esc(c.cabinetId) + '">Isi</button><button class="btn secondary small" type="button" data-cedit="' + esc(c.cabinetId) + '">Edit</button></div></div></div>';
-    }).join('');
+    lazyList($('containerList'), state.containers, containerRow, { empty: '<div class="empty">Belum ada kabinet/box. Tambah wadah dulu, lalu kelompokkan asetnya lewat Scan › Kelompokkan.</div>' });
+  }
+  function containerRow(c) {
+    return '<div class="item tap" data-copen="' + esc(c.cabinetId) + '" role="button" tabindex="0"><div class="info"><strong>' + esc(c.cabinetId) + ' <span class="pill gold">' + (c.containerType === 'BOX' ? 'Box' : 'Kabinet') + '</span></strong>' +
+      '<div>' + esc(c.name) + (c.category ? ' <span class="muted">· ' + esc(c.category) + '</span>' : '') + '</div>' +
+      '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.damagedCount ? '<span class="pill bad">' + c.damagedCount + ' rusak</span>' : '') +
+      (c.outCount ? '<span class="pill out">' + c.outCount + ' di luar</span>' : '') + (c.note ? '<span class="muted">' + esc(c.note) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
+  }
+  function containerSheet(cid) {
+    var c = state.containers.filter(function (k) { return k.cabinetId === cid; })[0];
+    if (!c) return;
+    var dis = c.itemCount ? '' : ' disabled';
+    var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(c.cabinetId) + '</h2><div>' + esc(c.name) + ' <span class="muted">· ' + (c.containerType === 'BOX' ? 'Box' : 'Kabinet') + (c.category ? ' · ' + esc(c.category) : '') + '</span></div>' +
+      '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.damagedCount ? '<span class="pill bad">' + c.damagedCount + ' rusak</span>' : '') + (c.outCount ? '<span class="pill out">' + c.outCount + ' di luar</span>' : '') + '</div>' +
+      (c.note ? '<p class="small muted" style="margin:6px 0 0">' + esc(c.note) + '</p>' : '') + '</div></div>' +
+      '<div class="sheet-grid">' +
+      '<button class="btn secondary full" type="button" data-a="group">' + ICON.box + 'Kelompokkan aset ke sini</button>' +
+      '<button class="btn secondary" type="button" data-a="check"' + dis + '>' + ICON.check + 'Cek semua isi</button>' +
+      '<button class="btn secondary" type="button" data-a="edit">' + ICON.edit + 'Edit</button>' +
+      '<button class="btn secondary" type="button" data-a="out"' + dis + '>' + ICON.out + 'Keluarkan semua isi</button>' +
+      '<button class="btn secondary" type="button" data-a="in"' + dis + '>' + ICON.inn + 'Masukkan semua isi</button>' +
+      '</div><button class="btn secondary block sheet-close" type="button" data-a="close">Tutup</button>');
+    d.querySelectorAll('[data-a]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var a = b.dataset.a;
+        closeDialog();
+        if (a === 'check' || a === 'out' || a === 'in') addContainerToCart(cid, a);
+        if (a === 'group') { groupTarget = cid; carts.group = []; goScan('group'); $('groupTarget').value = groupTarget; renderGroupPick(); }
+        if (a === 'edit') editContainer(cid);
+      });
+    });
   }
 
   function renderHistory() {
@@ -565,7 +655,10 @@
       return [t.item_id, t.item_name, t.event_name, t.location, t.user, t.cabinet_id, t.note, t.batch_id].join(' ').toLowerCase().indexOf(q) >= 0;
     });
     $('historyCount').textContent = rows.length + ' dari ' + state.transactions.length + ' transaksi terakhir yang dimuat. Riwayat lengkap ada di sheet.';
-    $('historyTable').innerHTML = rows.length ? txnTable(rows) : '<div class="empty">Belum ada riwayat.</div>';
+    var host = $('historyTable');
+    if (!rows.length) { host.innerHTML = '<div class="empty">Belum ada riwayat.</div>'; return; }
+    host.innerHTML = '<table>' + TXN_HEAD + '<tbody></tbody></table>';
+    lazyList(host.querySelector('tbody'), rows, txnRow, { row: 'tr', chunk: 60 });
   }
 
   function showHistory(id) {
@@ -632,13 +725,11 @@
   }
   function renderLabels() {
     var list = labelMatches();
-    var n = Object.keys(labelSelected).length;
-    $('labelCount').textContent = n + ' dipilih · ' + list.length + ' hasil';
-    var shown = list.slice(0, 300);
-    $('labelList').innerHTML = shown.length ? shown.map(function (x) {
+    $('labelCount').textContent = Object.keys(labelSelected).length + ' dipilih · ' + list.length + ' hasil';
+    lazyList($('labelList'), list, function (x) {
       return '<label class="item" style="margin:0;font-weight:400;font-size:14px;color:inherit;cursor:pointer"><input type="checkbox" data-label="' + esc(x.id) + '"' + (labelSelected[x.id] ? ' checked' : '') + '>' +
         '<div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) + '</div></div></label>';
-    }).join('') + (list.length > shown.length ? '<div class="small muted" style="padding:8px 0">Menampilkan 300 dari ' + list.length + '. Persempit pencarian.</div>' : '') : '<div class="empty">Tidak ada barang.</div>';
+    }, { empty: '<div class="empty">Tidak ada barang.</div>' });
   }
   function qrSvg(text) {
     var qr = qrcode(0, 'M');
@@ -662,23 +753,30 @@
 
   // ---------- import and containers forms ----------
 
-  function submitImport(e) {
-    e.preventDefault();
-    var form = e.target;
-    var f = {};
-    new FormData(form).forEach(function (v, k) { f[k] = String(v); });
-    var ids = f.ids.split(/[\n\r\t,;]+/).map(function (s) { return s.trim(); }).filter(Boolean);
-    if (!ids.length) { toast('Tempelkan minimal satu ID.', true); return; }
-    if (ids.length > 2000) { toast('Maksimal 2.000 ID per proses.', true); return; }
-    confirmDialog('Tambah ' + ids.length + ' ID?', 'ID yang sudah ada akan dilewati.', 'Tambah').then(function (yes) {
-      if (!yes) return;
-      f.ids = ids;
-      api('item.import', f, { batchId: uuid(), loadingText: 'Mendaftarkan ' + ids.length + ' ID...' }).then(function (d) {
-        applySnapshot(d);
-        form.elements.ids.value = '';
-        toast(d.message);
-        if (d.skippedCount) console.info('ID duplikat yang dilewati:', d.skipped);
-      }).catch(function (err) { toast(err.message, true); });
+  function importDialog() {
+    var types = state.types.map(function (t) { return '<option value="' + esc(t) + '">' + esc(typeLabel(t)) + '</option>'; }).join('');
+    formDialog('Tambah Aset',
+      '<p class="small muted">Untuk ID yang sudah tercetak di label. Satu ID per baris; ID dipertahankan apa adanya dan menjadi isi QR. Maksimal 2.000 ID per proses, duplikat dilewati.</p>' +
+      '<label>Jenis barang *</label><select name="type" required>' + types + '</select>' +
+      '<label>Nama barang *</label><input name="name" required placeholder="Contoh: Modul LED P2.9">' +
+      '<label>Kategori</label><input name="category" placeholder="Contoh: LED Screen">' +
+      '<label>Lokasi awal</label><input name="location" value="Gudang">' +
+      '<label>Daftar ID *</label><textarea name="ids" rows="7" required placeholder="1-MVG-12-25-NY-MD.001&#10;1-MVG-12-25-NY-MD.002"></textarea>',
+      'Tambah aset'
+    ).then(function (f) {
+      if (!f) return;
+      var ids = f.ids.split(/[\n\r\t,;]+/).map(function (v) { return v.trim(); }).filter(Boolean);
+      if (!ids.length) { toast('Tempelkan minimal satu ID.', true); return; }
+      if (ids.length > 2000) { toast('Maksimal 2.000 ID per proses.', true); return; }
+      confirmDialog('Tambah ' + ids.length + ' ID?', 'ID yang sudah ada akan dilewati.', 'Tambah').then(function (yes) {
+        if (!yes) return;
+        f.ids = ids;
+        api('item.import', f, { batchId: uuid(), loadingText: 'Mendaftarkan ' + ids.length + ' ID...' }).then(function (d) {
+          applySnapshot(d);
+          toast(d.message);
+          if (d.skippedCount) console.info('ID duplikat yang dilewati:', d.skipped);
+        }).catch(function (err) { toast(err.message, true); });
+      });
     });
   }
 
@@ -774,39 +872,18 @@
       toast(list.length + ' aset masuk keranjang.');
     });
 
-    $('inventorySearch').addEventListener('input', function () { inventoryShown = 150; renderInventory(); });
-    $('inventoryFilter').addEventListener('change', function () { inventoryShown = 150; renderInventory(); });
-    $('inventoryMore').addEventListener('click', function () { inventoryShown += 150; renderInventory(); });
-    $('inventoryList').addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.cart) {
-        var x = state.items.filter(function (i) { return i.id === b.dataset.id; })[0];
-        if (!x) return;
-        setFlow(b.dataset.cart);
-        var added = pushCart(x, b.dataset.cart, '');
-        showPage('scan');
-        toast(added ? x.id + ' masuk keranjang.' : x.id + ' sudah ada di keranjang.', !added);
-      }
-      if (b.dataset.history) showHistory(b.dataset.history);
-      if (b.dataset.edit) editItem(b.dataset.edit);
-      if (b.dataset.deactivate) deactivateItem(b.dataset.deactivate);
-    });
-    $('importToggle').addEventListener('click', function () {
-      var f = $('importForm'); f.classList.toggle('hidden');
-      $('importToggle').textContent = f.classList.contains('hidden') ? 'Buka' : 'Tutup';
-    });
-    $('importForm').addEventListener('submit', submitImport);
+    $('inventorySearch').addEventListener('input', renderInventory);
+    $('inventoryFilter').addEventListener('change', renderInventory);
+    $('inventoryList').addEventListener('click', function (e) { var r = e.target.closest('[data-open]'); if (r) itemSheet(r.dataset.open); });
+    $('inventoryList').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var r = e.target.closest('[data-open]'); if (r) itemSheet(r.dataset.open); } });
+    $('importBtn').addEventListener('click', importDialog);
 
     $('containerFormToggle').addEventListener('click', function () { $('containerForm').classList.toggle('hidden'); previewContainerId(); });
     $('containerFormCancel').addEventListener('click', function () { $('containerForm').reset(); $('containerForm').classList.add('hidden'); });
     $('containerType').addEventListener('change', previewContainerId);
     $('containerForm').addEventListener('submit', submitContainer);
-    $('containerList').addEventListener('click', function (e) {
-      var b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.ccart) addContainerToCart(b.dataset.cid, b.dataset.ccart);
-      if (b.dataset.group) { groupTarget = b.dataset.group; carts.group = []; goScan('group'); $('groupTarget').value = groupTarget; renderGroupPick(); }
-      if (b.dataset.cedit) editContainer(b.dataset.cedit);
-    });
+    $('containerList').addEventListener('click', function (e) { var r = e.target.closest('[data-copen]'); if (r) containerSheet(r.dataset.copen); });
+    $('containerList').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var r = e.target.closest('[data-copen]'); if (r) containerSheet(r.dataset.copen); } });
 
     $('historySearch').addEventListener('input', renderHistory);
     $('historyAction').addEventListener('change', renderHistory);
@@ -820,6 +897,27 @@
     $('labelSelectAll').addEventListener('click', function () { labelMatches().forEach(function (x) { labelSelected[x.id] = true; }); renderLabels(); });
     $('labelClear').addEventListener('click', function () { labelSelected = {}; $('printArea').innerHTML = ''; renderLabels(); });
     $('labelPrint').addEventListener('click', printLabels);
+
+    $('refreshBtn').addEventListener('click', function () { refreshQuiet(true); });
+
+    // Pull to refresh on touch screens: pull down from the top of a page, release past 80px.
+    var ptr = { y: 0, on: false, d: 0 };
+    document.addEventListener('touchstart', function (e) {
+      if (window.scrollY > 0 || $('appView').classList.contains('hidden') || $('dlg').open || cameraOn) { ptr.on = false; return; }
+      ptr.y = e.touches[0].clientY; ptr.on = true; ptr.d = 0;
+    }, { passive: true });
+    document.addEventListener('touchmove', function (e) {
+      if (!ptr.on) return;
+      ptr.d = e.touches[0].clientY - ptr.y;
+      if (ptr.d > 16) { $('ptr').classList.add('show'); $('ptrText').textContent = ptr.d > 80 ? 'Lepas untuk memperbarui' : 'Tarik untuk memperbarui'; }
+      else $('ptr').classList.remove('show');
+    }, { passive: true });
+    document.addEventListener('touchend', function () {
+      if (!ptr.on) return;
+      ptr.on = false;
+      if (ptr.d > 80) { $('ptrText').textContent = 'Memperbarui...'; refreshQuiet(true).then(function () { $('ptr').classList.remove('show'); }); }
+      else $('ptr').classList.remove('show');
+    });
 
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { stopCamera(); return; }

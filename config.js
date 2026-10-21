@@ -2,5 +2,5 @@
 // Leave it empty and the app shows the setup instructions instead of a login screen.
 window.APP_CONFIG = {
   apiUrl: '',
-  appName: 'Inventory Scanner'
+  appName: 'Vortex Inventory'
 };

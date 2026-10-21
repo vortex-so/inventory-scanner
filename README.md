@@ -12,10 +12,10 @@ goes into the same field.
 
 | Part | What | Where |
 |---|---|---|
-| Front end | `index.html`, `app.js`, `app.css`, `config.js`, manifest and icons | any static host, this repo's Pages |
+| Front end | `index.html`, `app.js`, `app.css`, `config.js`, manifest, icons and the Vortex logo | any static host, this repo's Pages |
 | Backend | `apps-script/Code.gs` | pasted into the Apps Script bound to the sheet |
 | Store | one Google Sheet with tabs `Items`, `Containers`, `Transactions`, `Users` | a company Google account |
-| Libraries | `vendor/` (QR scanning, QR drawing), pinned, self-hosted | see `vendor/README.md` |
+| Libraries | `vendor/` (QR scanning, QR drawing, the Rethink Sans font), pinned, self-hosted | see `vendor/README.md` |
 
 No build step, no CI, no service worker, no npm. Deploy is a push. The sheet is the database, the admin
 panel and the backup (File › Version history).
@@ -43,6 +43,16 @@ The URL stays the same.
 
 ## Everyday use
 
+- **Look.** The Vortex theme: dark surfaces, the red mark, gold section tags, Rethink Sans headings, taken
+  from vortex.so. The logo files are `vortex-logo.png` (lockup, white wordmark) and `vortex-mark.png`.
+- **Rows open a sheet.** Tap an item or a cabinet row and one sheet shows everything you can do with it:
+  add to a flow, history, edit, deactivate. No button rows in the list.
+- **Long lists render as you scroll.** All items come down in one call (a few hundred rows is ~100 KB);
+  the page draws 60 at a time and adds more as you scroll, on the inventory, history, labels and grouping
+  lists. Search and filters work on the whole set.
+- **Refresh.** Pull down from the top of any page on a phone, tap the refresh icon in the top bar, or just
+  come back to the tab: it re-reads the sheet when it regains focus (at most once a minute). The top bar
+  shows when the data was last read.
 - **Two layouts, one page.** On a laptop or tablet the app shows the sidebar of the original prototype
   (Dashboard · Action · Tools · Riwayat) and the two-column scan screen; on a phone a bottom bar. Same
   names, same forms. Each device finishes its own job: the phone scans and saves, and a desktop tab
