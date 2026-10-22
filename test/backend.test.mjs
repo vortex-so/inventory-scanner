@@ -225,7 +225,7 @@ test('shared cart: two devices on one login, separate logins, save drops what wa
   ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[0], cab: '' }] }] });
   const afterB = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[1], cab: '' }, { id: MODS[0], cab: 'BOX-001' }] }] });
   assert.deepEqual(afterB.carts.out, [{ id: MODS[1], cab: '' }, { id: MODS[0], cab: 'BOX-001' }]);
-  assert.equal(afterB.rev, 2);
+  assert.ok(afterB.rev > first.rev, 'revision grows');
 
   // the laptop (same login) sees the same cart
   const laptop = ok('cart.get');
@@ -267,8 +267,15 @@ test('shared cart: two devices on one login, separate logins, save drops what wa
   const part = ok('commit', { action: 'INSPEKSI', ids: [MODS[2], MODS[0]], condition: 'BAIK', fromCart: true }, { batchId: 'b-4' });
   assert.match(part.message, /1 unit\. 1 ID dilewati/);
 
+  // clearing the Carts tab by hand: the next change still gets a newer revision than any device has seen
+  const seen = ok('cart.get').rev;
+  gas.sheets.get('Carts').getRange(2, 1, 1, 4).setValues([['', '', '', '']]);
+  for (const until = Date.now() + 30; Date.now() < until;) { /* real saves are seconds apart; here, a few ms */ }
+  const fresh = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[0] }] }] });
+  assert.ok(fresh.rev > seen, `revision after a manual clear (${fresh.rev}) must exceed ${seen}`);
+
   // the cart is one readable row per login in the Carts tab
-  const rows = gas.rows('Carts');
+  const rows = gas.rows('Carts').filter(r => r[0]);
   assert.equal(rows.length, 1);
   assert.equal(rows[0][0], 'admin');
   assert.equal(code.length, 6);

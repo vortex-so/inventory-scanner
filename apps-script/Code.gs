@@ -482,7 +482,9 @@ function loadCart(ss, user) {
 }
 
 function saveCart(ss, c, user) {
-  c.state.rev++;
+  // The revision is a timestamp, so it only ever grows, even if someone clears the Carts tab by hand:
+  // open devices drop answers older than the one they show.
+  c.state.rev = Math.max(c.state.rev + 1, Date.now());
   var data = JSON.stringify({ carts: c.state.carts, target: c.state.target });
   if (data.length > 45000) throw new AppError('Keranjang terlalu besar. Simpan sebagian dulu.');
   var values = [user.name, String(c.state.rev), data, nowStr()];

@@ -70,7 +70,7 @@
   var cartsReady = false; // persistCarts() stays quiet until the saved cart has been restored, or the first render would wipe it
   // Shared cart: every device logged in with the same name and code sees one cart. Changes go up as small
   // operations (ops) and the other devices pick them up by polling; see the "shared cart" section below.
-  var sync = { on: false, ops: [], rev: -1, busy: null, timer: 0, polling: false, lastPoll: 0, dataRev: '', refetching: false };
+  var sync = { on: false, ops: [], rev: -1, busy: null, timer: 0, polling: false, lastPoll: 0, dataRev: '', refetching: false, refetchedRev: null };
 
   // ---------- small UI helpers ----------
 
@@ -751,9 +751,11 @@
     if (sel && !unknown) sel.value = groupTarget;
     renderCart();
     if (flow === 'group') renderGroupPick();
-    if (unknown && !sync.refetching) {
-      // Another device scanned something this one has not loaded yet: read the sheet, then show it again.
+    if (unknown && !sync.refetching && sync.refetchedRev !== st.rev) {
+      // Another device scanned something this one has not loaded yet: read the sheet once, then show it again.
+      // An ID that is still unknown after that (deleted from the sheet) is simply left out, not chased forever.
       sync.refetching = true;
+      sync.refetchedRev = st.rev;
       refreshQuiet().then(function () {
         sync.refetching = false;
         if (sync.rev === st.rev) { sync.rev = st.rev - 1; applyCartState(st, true); }
