@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 8791, CDP = 9333;
@@ -18,7 +19,25 @@ const server = spawn(process.execPath, [path.join(here, 'dev-server.mjs'), Strin
 let adminCode = '';
 server.stdout.on('data', d => { const m = /admin \/ (\d+)/.exec(String(d)); if (m) adminCode = m[1]; });
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-smoke-'));
-const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=420,900', 'about:blank'], { stdio: 'ignore' });
+// A fake phone camera: a tall 720x960 picture with one seeded label in the middle, 15 % of the frame width
+// (about 15 cm away on a phone), so the camera loop itself is tested, not only typed IDs.
+const CAM_LABEL = '1-MVG-12-25-NY-MD.036';
+const camFile = path.join(profile, 'camera.y4m');
+{
+  const qrcode = createRequire(import.meta.url)(path.join(here, '..', 'vendor', 'qrcode.js'));
+  const W = 720, H = 960, qr = qrcode(0, 'M'); qr.addData(CAM_LABEL); qr.make();
+  const n = qr.getModuleCount(), size = Math.round(W * 0.15), cell = size / (n + 8), x0 = (W - size) >> 1, y0 = (H - size) >> 1;
+  const Y = Buffer.alloc(W * H, 110);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    const mx = Math.floor(x / cell) - 4, my = Math.floor(y / cell) - 4;
+    Y[(y0 + y) * W + x0 + x] = mx >= 0 && my >= 0 && mx < n && my < n && qr.isDark(my, mx) ? 30 : 225;
+  }
+  const UV = Buffer.alloc(W * H / 4, 128), parts = [Buffer.from(`YUV4MPEG2 W${W} H${H} F10:1 Ip A1:1 C420jpeg\n`)];
+  for (let f = 0; f < 4; f++) parts.push(Buffer.from('FRAME\n'), Y, UV, UV);
+  fs.writeFileSync(camFile, Buffer.concat(parts));
+}
+const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`, '--no-first-run', '--window-size=420,900',
+  '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${camFile}`, 'about:blank'], { stdio: 'ignore' });
 const cleanup = () => { try { chrome.kill(); } catch {} try { server.kill(); } catch {} try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {} };
 process.on('exit', cleanup);
 
@@ -133,7 +152,7 @@ await evaluate(`inventoryApp.showPage('history'); true`);
 check('history renders grouped saves', (await evaluate(`document.querySelectorAll('#historyTable details').length`)) >= 5);
 await evaluate(`document.querySelector('#historyTable details').open = true; true`);
 check('a save expands to its rows', (await evaluate(`document.querySelectorAll('#historyTable details[open] .rowline').length`)) > 0);
-await evaluate(`inventoryApp.showPage('inventory'); document.getElementById('lookupScanBtn').click(); true`);
+await evaluate(`window.__gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices); navigator.mediaDevices.getUserMedia = () => Promise.reject(new Error('no camera in this check')); inventoryApp.showPage('inventory'); document.getElementById('lookupScanBtn').click(); true`);
 await sleep(400);
 check('scan-to-look-up dialog opens with a typed fallback', await evaluate(`document.getElementById('dlg').open && !!document.getElementById('lookupInput')`));
 await evaluate(`document.getElementById('lookupInput').value='1-MVG-12-25-NY-MD.002'; document.getElementById('lookupGo').click(); true`);
@@ -147,6 +166,13 @@ await evaluate(`(() => { const k = Object.keys(localStorage).find(k => k.startsW
 await send('Page.reload'); await sleep(1800);
 const merged = (await apiCall('cart.get')).data;
 check('a cart from the previous app version is merged into the shared cart', merged.carts.check.some(e => e.id === '1-MVG-12-25-NY-MD.035') && merged.carts.group.some(e => e.id === '1-MVG-12-25-NY-MD.031'));
+
+// The camera loop end to end: start the camera on the Scan page, the fake camera's label lands in the cart.
+await evaluate(`if (window.__gum) navigator.mediaDevices.getUserMedia = window.__gum; inventoryApp.setFlow('in'); inventoryApp.showPage('scan'); document.getElementById('camStart').click(); true`);
+let camHit = false;
+for (let i = 0; i < 40 && !camHit; i++) { await sleep(200); camHit = await evaluate(`inventoryApp.carts.in.some(x => x.id === '${CAM_LABEL}')`); }
+check('the camera reads a label held about 15 cm away and puts it in the cart', camHit, await evaluate(`JSON.stringify(inventoryApp.scanStats) + ' ' + document.getElementById('scanStatus').textContent`));
+await evaluate(`document.getElementById('camStop').click(); true`);
 
 check('no console errors or exceptions', errors.length === 0, errors.join(' | ').slice(0, 400));
 console.log(failed ? `\n${failed} check(s) failed` : '\nall smoke checks passed');

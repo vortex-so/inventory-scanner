@@ -179,12 +179,9 @@ tr.sentinel td { padding: 4px; border: 0; }
 .flowtabs button.has .count { color: var(--gold); }
 .viewfinder { position: relative; width: 100%; max-width: 440px; margin: 0 auto; aspect-ratio: 1; border-radius: var(--r-lg); overflow: hidden; background: #000; border: 1px solid var(--line); }
 #reader, #lookupReader { position: absolute; inset: 0; }
-/* Phones deliver a tall 3:4 picture; it is cropped to the square from the centre. The scanning library sizes
-   its own box and shading to the uncropped picture, so they land low and cut off: hide them and keep our
-   corners, which mark the centred 75 % square the library reads. Do not position the video absolutely:
-   the library then stops reading (tested with a fake camera). */
-.viewfinder video { width: 100% !important; height: 100% !important; object-fit: cover; }
-.viewfinder #qr-shaded-region { display: none !important; }
+/* The camera picture (often a tall 3:4 one) is cropped to the square from the centre; app.js reads that same
+   centred square, and the corners mark the middle 75 % of it. */
+.viewfinder video { display: block; width: 100% !important; height: 100% !important; object-fit: cover; }
 .viewfinder img { display: none; }
 .viewfinder .corners { position: absolute; inset: 12.5%; pointer-events: none; z-index: 2; }
 .viewfinder .corners::before, .viewfinder .corners::after, .viewfinder .corners i::before, .viewfinder .corners i::after { content: ""; position: absolute; width: 26px; height: 26px; border: 3px solid var(--red); border-radius: 4px; }

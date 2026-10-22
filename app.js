@@ -345,30 +345,118 @@
   function cameraWanted() { try { return localStorage.getItem(CAMERA_KEY) === '1'; } catch (e) { return false; } }
   function rememberCamera(on) { try { if (on) localStorage.setItem(CAMERA_KEY, '1'); else localStorage.removeItem(CAMERA_KEY); } catch (e) { /* ignore */ } }
 
-  function makeScanner(elementId) {
+  // The camera loop is ours; only the decoder comes from html5-qrcode (the phone's built-in detector where
+  // the browser has one, ZXing otherwise). The library's own loop decoded a copy of the box at its on-screen
+  // size (about 240 px on a phone) and stretched it on iPhones' 3:4 picture, so a 20 mm label had to be held
+  // about 8 cm away, closer than iPhones can focus. Here the camera runs at up to 1920 x 1080 and the centre
+  // square is decoded at the camera's own resolution, undistorted, alternating with a half-size pass that
+  // helps when a label is close and soft. Labels read from roughly 15-30 cm.
+  var decoder = null;
+  var scanStats = { frames: 0, ms: 0, last: '' };
+  function getDecoder() {
+    if (decoder || !window.Html5Qrcode) return decoder;
+    var host = document.getElementById('qrDecoderHost');
+    if (!host) { host = document.createElement('div'); host.id = 'qrDecoderHost'; host.hidden = true; document.body.appendChild(host); }
     var formats = window.Html5QrcodeSupportedFormats ? [Html5QrcodeSupportedFormats.QR_CODE] : undefined;
-    return new Html5Qrcode(elementId, { verbose: false, formatsToSupport: formats, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+    var inst = new Html5Qrcode('qrDecoderHost', { verbose: false, formatsToSupport: formats, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+    decoder = inst.qrcode && typeof inst.qrcode.decodeAsync === 'function' ? inst.qrcode : null;
+    // ZXing (the decoder on iPhones) ships with its thorough mode off; the only hint set to false is that one.
+    // On, it searches every row for the corner squares, so small or soft labels are found more often.
+    [decoder && decoder.primaryDecoder, decoder && decoder.secondaryDecoder].forEach(function (d) {
+      if (d && d.hints instanceof Map) d.hints.forEach(function (v, k) { if (v === false) d.hints.set(k, true); });
+    });
+    return decoder;
   }
-  var SCAN_CONFIG = { fps: 10, aspectRatio: 1, qrbox: function (w, h) { var s = Math.floor(Math.min(w, h) * 0.75); return { width: s, height: s }; } };
+
+  /** A camera bound to one element: start(onCode) resolves once the picture runs; stop() releases the camera. */
+  function makeScanner(elementId) {
+    var video = null, stream = null, running = false, timer = 0, pass = 0;
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    function region(host) {
+      var vw = video.videoWidth, vh = video.videoHeight;
+      var W = host.clientWidth || vw, H = host.clientHeight || vh;
+      var k = Math.max(W / vw, H / vh); // the video is drawn with object-fit: cover, centred
+      var side = Math.min(W / k, H / k) * 0.85; // the visible square, slightly larger than the corners' 75 %
+      var full = Math.min(Math.round(side), 1000);
+      var out = pass % 2 ? Math.min(full, 480) : full;
+      return { x: (vw - side) / 2, y: (vh - side) / 2, side: side, out: out };
+    }
+    function tick(onCode, dec) {
+      if (!running) return;
+      var host = $(elementId);
+      if (!host || !video || video.readyState < 2 || !video.videoWidth) { timer = setTimeout(function () { tick(onCode, dec); }, 80); return; }
+      var r = region(host);
+      pass++;
+      if (canvas.width !== r.out) { canvas.width = r.out; canvas.height = r.out; }
+      ctx.drawImage(video, r.x, r.y, r.side, r.side, 0, 0, r.out, r.out);
+      var t0 = Date.now();
+      dec.decodeAsync(canvas).then(function (res) {
+        if (running && res && res.text) onCode(res.text);
+      }, function () { /* no code in this frame */ }).then(function () {
+        scanStats.frames++; scanStats.ms += Date.now() - t0;
+        scanStats.last = video ? video.videoWidth + 'x' + video.videoHeight + ' -> ' + r.out : '';
+        if (running) timer = setTimeout(function () { tick(onCode, dec); }, 30);
+      });
+    }
+    return {
+      start: function (onCode) {
+        var dec = getDecoder();
+        if (!dec) return Promise.reject(new Error('Pustaka kamera tidak termuat. Muat ulang halaman'));
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.reject(new Error('browser ini tidak memberi akses kamera'));
+        var want = { audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } };
+        return navigator.mediaDevices.getUserMedia(want).catch(function (e) {
+          if (e && /Overconstrained|ConstraintNotSatisfied/.test(e.name)) return navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: 'environment' } });
+          throw e;
+        }).then(function (s) {
+          stream = s;
+          var track = s.getVideoTracks()[0];
+          if (track && track.applyConstraints) track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () { /* iPhone ignores this */ });
+          var host = $(elementId);
+          if (!host) throw new Error('layar kamera tertutup');
+          video = document.createElement('video');
+          video.setAttribute('playsinline', ''); video.setAttribute('muted', ''); video.muted = true; video.autoplay = true;
+          video.srcObject = s;
+          host.innerHTML = '';
+          host.appendChild(video);
+          return video.play().catch(function () { /* autoplay with muted+playsinline still starts on iOS */ }).then(function () {
+            running = true; pass = 0;
+            tick(onCode, dec);
+          });
+        });
+      },
+      stop: function () {
+        running = false;
+        clearTimeout(timer);
+        if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+        stream = null;
+        if (video) { video.srcObject = null; if (video.parentNode) video.parentNode.removeChild(video); }
+        video = null;
+        return Promise.resolve();
+      }
+    };
+  }
 
   function startCamera() {
     if (cameraOn) return;
     if (!window.Html5Qrcode) { scanStatus('Pustaka kamera tidak termuat. Muat ulang halaman.', 'err'); return; }
     ensureAudio();
     scanStatus('Membuka kamera...');
+    cameraOn = true; // blocks a second start while the first is still asking for the camera
     try {
       if (!scanner) scanner = makeScanner('reader');
-      scanner.start({ facingMode: 'environment' }, SCAN_CONFIG, onDecoded, function () { /* no code in frame */ }).then(function () {
+      scanner.start(onDecoded).then(function () {
         cameraOn = true;
         rememberCamera(true);
         $('viewfinder').classList.add('on');
         $('camStart').disabled = true;
-        scanStatus('Kamera aktif. Arahkan ke QR.', '');
+        scanStatus('Kamera aktif. Pegang ±20 cm dari label, QR di tengah kotak.', '');
       }).catch(cameraFailed);
     } catch (err) { cameraFailed(err); }
   }
   function cameraFailed(err) {
     cameraOn = false;
+    if (scanner) scanner.stop();
     rememberCamera(false);
     var msg = (err && err.message) || String(err || '');
     scanStatus('Kamera tidak bisa dibuka: ' + msg + '. Izinkan kamera untuk situs ini, pastikan alamat https, dan buka di Chrome/Safari, bukan di browser WhatsApp.', 'err');
@@ -380,7 +468,7 @@
     if (!keep) rememberCamera(false);
     if (!scanner || !cameraOn) return;
     cameraOn = false;
-    scanner.stop().then(function () { scanner.clear(); }).catch(function () { /* already stopped */ });
+    scanner.stop();
   }
   function onDecoded(text) {
     var now = Date.now();
@@ -1084,15 +1172,15 @@
     d.addEventListener('cancel', function () { stopLookup(); }, { once: true });
     try {
       lookupScanner = makeScanner('lookupReader');
-      lookupScanner.start({ facingMode: 'environment' }, SCAN_CONFIG, function (text) { found(text); }, function () { /* nothing yet */ })
-        .then(function () { $('lookupView').classList.add('on'); })
+      lookupScanner.start(function (text) { found(text); })
+        .then(function () { var v = $('lookupView'); if (v) v.classList.add('on'); })
         .catch(function (err) { var inp = $('lookupInput'); if (!inp) return; toast('Kamera tidak bisa dibuka: ' + ((err && err.message) || err) + '. Ketik ID di bawah.', true); inp.focus(); });
     } catch (err) { toast('Kamera tidak tersedia. Ketik ID di bawah.', true); }
   }
   function stopLookup() {
     if (!lookupScanner) return;
     var s = lookupScanner; lookupScanner = null;
-    try { s.stop().then(function () { s.clear(); }).catch(function () { /* not running */ }); } catch (e) { /* ignore */ }
+    s.stop();
   }
 
   // ---------- labels ----------
@@ -1323,7 +1411,7 @@
   }
 
   // Exposed for the headless smoke test and for debugging from the console.
-  window.inventoryApp = { handleCode: handleCode, setFlow: setFlow, showPage: showPage, saveFlow: saveFlow, carts: carts, state: function () { return state; }, sync: sync, pollCart: pollCart, flushOps: flushOps };
+  window.inventoryApp = { handleCode: handleCode, setFlow: setFlow, showPage: showPage, saveFlow: saveFlow, carts: carts, state: function () { return state; }, sync: sync, scanStats: scanStats, pollCart: pollCart, flushOps: flushOps };
 
   init();
 })();

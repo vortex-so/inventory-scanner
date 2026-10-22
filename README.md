@@ -52,6 +52,12 @@ The URL stays the same.
   cart with a short green flash. Typing an ID or a USB scanner's keystrokes into the field under the
   camera does the same. Once the camera has been started it starts by itself the next time the Scan
   screen opens; Hentikan switches that off.
+- **Hold it about 20 cm away.** The camera runs at up to 1920 x 1080 and the centre square (the red corners)
+  is decoded at the camera's own resolution, so a 20 mm label reads from roughly 15 to 35 cm, where phone
+  cameras are in focus. The scanning library's own loop decoded a ~240 px copy and needed the label within
+  about 6-12 cm, closer than iPhones focus; only its decoder is used now (the browser's built-in detector
+  where there is one, ZXing in thorough mode on iPhones). Measured with a fake camera: `node test/smoke.mjs`
+  checks that a label at 15 % of the frame width is read.
 - **Save.** Simpan opens one sheet with the details (date, location, event, note; or the condition and a
   damage note for a check) and the confirm. The sheet remembers what you typed if a save is refused, so
   a retry is one tap.
