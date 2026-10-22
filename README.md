@@ -16,7 +16,7 @@ goes into the same field.
 |---|---|---|
 | Front end | `index.html`, `app.js`, `app.css`, `config.js`, manifest, icons and the Vortex logo | any static host, this repo's Pages |
 | Backend | `apps-script/Code.gs` | pasted into the Apps Script bound to the sheet |
-| Store | one Google Sheet with tabs `Items`, `Containers`, `Transactions`, `Users` | a company Google account |
+| Store | one Google Sheet with tabs `Items`, `Containers`, `Transactions`, `Users`, `Carts` | a company Google account |
 | Libraries | `vendor/` (QR scanning, QR drawing, the Rethink Sans font), pinned, self-hosted | see `vendor/README.md` |
 
 No build step, no CI, no service worker, no npm. Deploy is a push. The sheet is the database, the admin
@@ -62,9 +62,18 @@ The URL stays the same.
   note, a date and location are required, unknown IDs are refused. A refused save names the offending IDs
   and the app removes them from the cart so you can save the rest.
 - **Retries are safe.** Every save carries a batch id; a repeat after a timeout is not written twice.
-- **The cart survives.** Carts, drafts and the chosen flow are kept in the phone's local storage per unit
-  and user, so a closed browser, a phone call or a dead battery does not lose the scans. They come back on
-  the next login, refreshed against the current inventory.
+- **One cart per login, on every device.** The cart lives in the sheet's `Carts` tab, one row per login.
+  Your phone, your second phone and your laptop, logged in with the same name and code, show the same cart:
+  a scan on one appears on the others within about 3 seconds (the Scan page asks every 3 s, other pages every
+  15 s, never in a hidden tab). Devices send small changes ("add this ID", "remove", "clear"), never a whole
+  cart, so two phones scanning in the same second both keep their scans. Simpan saves the IDs you saw and
+  removes them from the cart for every device; a second Simpan of the same cart from another device finds
+  nothing left and writes nothing. Different logins never share a cart, so give each crew member their own
+  row in `Users`: two people on one login doing two different check-outs at once would fill one cart.
+- **The cart survives.** Unsent changes and drafts are also kept in the device's local storage, so no
+  signal, a closed browser or a dead battery loses nothing; they are sent when the app is back online.
+- **The laptop follows.** When anything is saved elsewhere, an open laptop re-reads the sheet on its next
+  check, so Dashboard and Riwayat show a phone's check-out within seconds.
 - **Look.** The Vortex theme: dark surfaces, the red mark, gold section tags, Rethink Sans headings, taken
   from vortex.so. The logo files are `vortex-logo.png` (lockup, white wordmark) and `vortex-mark.png`.
 - **Rows open a sheet.** Tap an item or a cabinet row and one sheet shows everything you can do with it;
@@ -81,8 +90,12 @@ The URL stays the same.
   shows when the data was last read.
 - **Two layouts, one page.** On a laptop or tablet the app shows the sidebar of the original prototype
   (Dashboard · Action · Tools · Riwayat) and the two-column scan screen; on a phone a bottom bar. Same
-  names, same forms. Each device finishes its own job.
-- **Labels.** Cetak QR draws QR codes in the browser; print at 100 % scale. Sizes 15, 20, 25 mm.
+  names, same forms.
+- **Labels.** Cetak QR draws QR codes in the browser. *Printer label* (the default) prints one label per
+  sticker for a Brother QL or similar: pick the loaded roll under Paper size in Chrome's print dialog (e.g.
+  29 x 90 mm), scale 100 %; Layout Landscape puts the code left and the text right. *Kertas A4* prints a grid
+  to cut out. QR sizes 15, 20, 25 mm, never larger than the label. Chrome's own header and footer are off.
+  Checked by rendering 29 x 90, 90 x 29, 62 x 29, 17 x 54 mm and A4 and decoding every printed code.
 
 ## The sheet
 
@@ -92,6 +105,7 @@ The URL stays the same.
 | `Containers` | cabinet_id · container_type (`KABINET`/`BOX`) · name · category · note · active · created_at · updated_at |
 | `Transactions` | ts · batch_id · action · item_id · item_name · item_type · event_date · location · event_name · cabinet_id · condition · damage_note · note · user |
 | `Users` | name · code · role · active |
+| `Carts` | user · rev · data (the login's open carts as JSON) · updated_at — created on first use; clear a row to empty that login's cart |
 
 Transactions is append-only and is the history. Items and Containers hold current state and may be fixed
 by hand in the sheet; the app reads the sheet fresh on every call. `setup()` formats all cells as plain

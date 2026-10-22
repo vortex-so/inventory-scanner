@@ -23,9 +23,9 @@ function boot() {
   return { gas, code, call, ok, fail };
 }
 
-test('setup creates the four tabs and an admin', () => {
+test('setup creates the five tabs and an admin', () => {
   const { gas, code } = boot();
-  assert.deepEqual([...gas.sheets.keys()], ['Items', 'Containers', 'Transactions', 'Users']);
+  assert.deepEqual([...gas.sheets.keys()], ['Items', 'Containers', 'Transactions', 'Carts', 'Users']);
   assert.match(code, /^\d{6}$/);
   assert.equal(gas.sheets.get('Items').data[0][0], 'id');
   assert.equal(gas.setup(), 'ok', 'setup is idempotent');
@@ -208,4 +208,68 @@ test('unknown action and malformed input never crash', () => {
   assert.equal(call('commit', null).ok, false);
   assert.equal(call('commit', { action: 'KELUAR', ids: 'not,an,array' }).ok, false);
   assert.equal(call('container.assign', { cabinetId: 'x', ids: 42 }).ok, false);
+});
+
+test('shared cart: two devices on one login, separate logins, save drops what was saved', () => {
+  const { gas, code, ok, fail } = boot();
+  ok('item.import', { type: 'MODUL', name: 'Modul', ids: MODS });
+  gas.sheets.get('Users').getRange(3, 1, 1, 4).setValues([['Reza', '5555', 'operator', 'TRUE']]);
+  const reza = (action, payload = {}) => gas.handle({ user: 'reza', code: '5555', action, payload });
+
+  // bootstrap carries an empty cart; nothing is written until a device changes it
+  const first = ok('bootstrap').cart;
+  assert.equal(first.rev, 0);
+  assert.deepEqual(first.carts, { check: [], out: [], in: [], group: [] });
+
+  // phone A and phone B (same login) add in the same moment: both scans are kept, newest first
+  ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[0], cab: '' }] }] });
+  const afterB = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[1], cab: '' }, { id: MODS[0], cab: 'BOX-001' }] }] });
+  assert.deepEqual(afterB.carts.out, [{ id: MODS[1], cab: '' }, { id: MODS[0], cab: 'BOX-001' }]);
+  assert.equal(afterB.rev, 2);
+
+  // the laptop (same login) sees the same cart
+  const laptop = ok('cart.get');
+  assert.deepEqual(laptop.carts.out.map(e => e.id), [MODS[1], MODS[0]]);
+  assert.match(laptop.dataRev, /^\d+\.\d+\.\d+$/);
+
+  // another login has its own, empty cart
+  const other = reza('cart.get');
+  assert.equal(other.ok, true);
+  assert.deepEqual(other.data.carts.out, []);
+
+  // group target, remove, clear
+  ok('cart.apply', { ops: [{ op: 'target', id: 'BOX-001' }, { op: 'add', flow: 'group', items: [{ id: MODS[2] }] }] });
+  let st = ok('cart.apply', { ops: [{ op: 'remove', flow: 'group', ids: [MODS[2]] }] });
+  assert.equal(st.target, 'BOX-001');
+  assert.deepEqual(st.carts.group, []);
+  ok('cart.apply', { ops: [{ op: 'add', flow: 'check', items: [{ id: MODS[2] }] }, { op: 'clear', flow: 'check' }] });
+
+  // phone saves what it had: saved IDs leave the shared cart, for every device
+  const saved = ok('commit', { action: 'KELUAR', ids: [MODS[1], MODS[0]], eventDate: '2026-10-21', location: 'Hall', fromCart: true }, { batchId: 'b-1' });
+  assert.deepEqual(saved.cart.carts.out, []);
+  assert.deepEqual(ok('cart.get').carts.out, []);
+
+  // the laptop presses Simpan on the same, already-saved cart: nothing is written twice
+  const before = gas.rows('Transactions').length;
+  const twice = fail('commit', { action: 'KELUAR', ids: [MODS[1], MODS[0]], eventDate: '2026-10-21', location: 'Hall', fromCart: true }, { batchId: 'b-2' });
+  assert.match(twice.error, /sudah disimpan/);
+  assert.deepEqual(twice.invalid.sort(), [MODS[0], MODS[1]].sort());
+  assert.equal(gas.rows('Transactions').length, before);
+
+  // a save without fromCart (old client) still works and ignores the shared cart
+  ok('cart.apply', { ops: [{ op: 'add', flow: 'in', items: [{ id: MODS[0] }] }] });
+  const plain = ok('commit', { action: 'MASUK', ids: [MODS[0], MODS[1]], eventDate: '2026-10-21', location: 'Hall' }, { batchId: 'b-3' });
+  assert.match(plain.message, /2 unit/);
+  assert.deepEqual(plain.cart.carts.in, []);
+
+  // only part of the cart left: the rest is saved and the skipped ones are named in the message
+  ok('cart.apply', { ops: [{ op: 'add', flow: 'check', items: [{ id: MODS[2] }] }] });
+  const part = ok('commit', { action: 'INSPEKSI', ids: [MODS[2], MODS[0]], condition: 'BAIK', fromCart: true }, { batchId: 'b-4' });
+  assert.match(part.message, /1 unit\. 1 ID dilewati/);
+
+  // the cart is one readable row per login in the Carts tab
+  const rows = gas.rows('Carts');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0][0], 'admin');
+  assert.equal(code.length, 6);
 });

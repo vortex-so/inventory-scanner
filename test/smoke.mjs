@@ -103,6 +103,24 @@ check('second save succeeds and clears the cart', (await evaluate(`inventoryApp.
 check('stats updated: 18 out', (await evaluate(`inventoryApp.state().stats.out`)) === 18);
 check('save button disabled on an empty cart', await evaluate(`document.getElementById('saveBtn').disabled === true`));
 
+// Shared cart: a second device on the same login, played here by direct calls to the dev server's API.
+const apiCall = async (action, payload = {}) => (await (await fetch(`http://localhost:${PORT}/api`, { method: 'POST', body: JSON.stringify({ user: 'admin', code: adminCode, action, payload }) })).json());
+check('after the save the shared cart is empty on the server', (await apiCall('cart.get')).data.carts.out.length === 0);
+await apiCall('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: '1-MVG-12-25-NY-MD.032', cab: '' }] }] });
+let seen = false;
+for (let i = 0; i < 30 && !seen; i++) { await sleep(250); seen = (await evaluate(`inventoryApp.carts.out.length`)) === 1; }
+check('a scan from another device on the same login shows here within seconds', seen);
+await evaluate(`document.querySelector('#cartList [data-remove]').click(); true`);
+await sleep(800);
+check('removing it here removes it on the other device too', (await apiCall('cart.get')).data.carts.out.length === 0);
+await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.033')`);
+await sleep(800);
+check('a scan here reaches the shared cart', (await apiCall('cart.get')).data.carts.out.map(e => e.id).join() === '1-MVG-12-25-NY-MD.033');
+await apiCall('commit', { action: 'KELUAR', ids: ['1-MVG-12-25-NY-MD.033'], eventDate: '2026-10-21', location: 'Gudang B', fromCart: true });
+let followed = false;
+for (let i = 0; i < 30 && !followed; i++) { await sleep(250); followed = (await evaluate(`inventoryApp.carts.out.length`)) === 0 && (await evaluate(`inventoryApp.state().stats.out`)) === 19; }
+check('a save on the other device empties this cart and updates the stats here', followed);
+
 await evaluate(`inventoryApp.setFlow('group'); true`);
 check('scanning a box in group flow sets it as the target', (await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`)) === true && (await evaluate(`document.getElementById('groupTarget').value`)) === '2-MVG-12-25-NY-BX.001');
 check('then scanning a module adds it', (await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.031')`)) === true && (await evaluate(`inventoryApp.carts.group.length`)) === 1);

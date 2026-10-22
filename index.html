@@ -184,8 +184,9 @@
     <section class="page" id="page-labels">
       <div class="panel no-print">
         <h2>Cetak label QR Code</h2>
-        <p class="small muted">Pilih unit yang mau dicetak. Di dialog cetak pakai skala 100% / ukuran sebenarnya.</p>
-        <div class="row"><div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="labelSearch" placeholder="Cari ID atau nama..."></div><select id="labelSize" style="flex:0 0 46%"><option value="15">QR 15 mm</option><option value="20">QR 20 mm</option><option value="25">QR 25 mm</option></select></div>
+        <p class="small muted">Pilih unit yang mau dicetak. Printer label (Brother QL): satu label per stiker; di dialog cetak pilih ukuran label yang terpasang di Paper size, skala 100%.</p>
+        <div class="search"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="labelSearch" placeholder="Cari ID atau nama..."></div>
+        <div class="row" style="margin-top:8px"><select id="labelPaper"><option value="roll">Printer label · 1 per stiker</option><option value="sheet">Kertas A4 · banyak label</option></select><select id="labelSize" style="flex:0 0 40%"><option value="15">QR 15 mm</option><option value="20" selected>QR 20 mm</option><option value="25">QR 25 mm</option></select></div>
         <div class="actions"><button class="btn secondary" id="labelSelectAll" type="button">Pilih semua hasil</button><button class="btn secondary" id="labelClear" type="button">Hapus pilihan</button><button class="btn success" id="labelPrint" type="button">Buat label &amp; cetak</button></div>
         <div id="labelCount" class="small muted" style="margin-top:8px"></div>
         <div id="labelList" class="list"></div>

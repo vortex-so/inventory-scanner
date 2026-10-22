@@ -7,6 +7,7 @@
   var SESSION_KEY = 'inventory-scanner.session';
   var CAMERA_KEY = 'inventory-scanner.camera';
   var CART_KEY = 'inventory-scanner.cart';
+  var LABEL_KEY = 'inventory-scanner.labels';
   var $ = function (id) { return document.getElementById(id); };
   var esc = function (s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -67,6 +68,9 @@
   var lastRefresh = 0;
   var audio = null;
   var cartsReady = false; // persistCarts() stays quiet until the saved cart has been restored, or the first render would wipe it
+  // Shared cart: every device logged in with the same name and code sees one cart. Changes go up as small
+  // operations (ops) and the other devices pick them up by polling; see the "shared cart" section below.
+  var sync = { on: false, ops: [], rev: -1, busy: null, timer: 0, polling: false, lastPoll: 0, dataRev: '', refetching: false };
 
   // ---------- small UI helpers ----------
 
@@ -239,6 +243,7 @@
     if (d.transactions) state.transactions = d.transactions;
     if (d.types && d.types.length) state.types = d.types;
     if (d.me) state.me = d.me;
+    if (d.dataRev) sync.dataRev = d.dataRev;
     renderAll();
     if (state.me) updateTitles();
   }
@@ -272,7 +277,7 @@
       $('whoRole').textContent = (state.me.role === 'admin' ? 'admin' : 'operator') + (units.length > 1 ? ' · ' + currentUnit().name : '');
       document.body.classList.toggle('is-admin', state.me.role === 'admin');
       $('importBtn').classList.toggle('hidden', state.me.role !== 'admin');
-      restoreCarts();
+      restoreCarts(d.cart);
       show('appView');
       showPage(page);
     }).catch(function (e) {
@@ -286,6 +291,7 @@
     session = null;
     Object.keys(carts).forEach(function (f) { carts[f] = []; });
     drafts = {}; groupTarget = ''; cartsReady = false;
+    clearTimeout(sync.timer); sync.on = false; sync.ops = []; sync.rev = -1;
     try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
     $('loginError').classList.add('hidden');
     $('loginCode').value = '';
@@ -424,8 +430,7 @@
         if (carts.group.length && groupTarget && groupTarget !== hit.container.cabinetId) {
           scanStatus('Keranjang masih untuk ' + groupTarget + '. Kosongkan dulu untuk ganti tujuan.', 'err'); buzz(false); return false;
         }
-        groupTarget = hit.container.cabinetId;
-        $('groupTarget').value = groupTarget;
+        setGroupTarget(hit.container.cabinetId);
         scanStatus('Tujuan: ' + hit.container.cabinetId + ' (' + hit.container.name + '). Sekarang scan isinya.', 'ok');
         buzz(true); renderGroupPick(); persistCarts(); return true;
       }
@@ -449,49 +454,198 @@
   function pushCart(item, f, cabinetId) {
     if (!item) return false;
     var cart = carts[f];
-    for (var i = 0; i < cart.length; i++) if (cart[i].id === item.id) { if (cabinetId) cart[i]._cartCabinetId = cabinetId; return false; }
-    var copy = {}; for (var k in item) copy[k] = item[k];
-    copy._cartCabinetId = cabinetId || '';
-    copy._at = Date.now();
-    cart.unshift(copy);
+    for (var i = 0; i < cart.length; i++) {
+      if (cart[i].id !== item.id) continue;
+      if (cabinetId && cart[i]._cartCabinetId !== cabinetId) {
+        cart[i]._cartCabinetId = cabinetId;
+        queueOp({ op: 'add', flow: f, items: [{ id: item.id, cab: cabinetId }] });
+      }
+      return false;
+    }
+    cart.unshift(cartCopy(item, cabinetId, Date.now()));
+    queueOp({ op: 'add', flow: f, items: [{ id: item.id, cab: cabinetId || '' }] });
     renderCart();
     return true;
   }
-  // The cart lives in local storage too, so a closed browser or a phone call does not lose the scans.
+  function cartCopy(item, cab, at) {
+    var copy = {};
+    for (var k in item) copy[k] = item[k];
+    copy._cartCabinetId = cab || '';
+    copy._at = at || 0;
+    return copy;
+  }
+  function removeFromCart(f, id) {
+    carts[f] = carts[f].filter(function (x) { return x.id !== id; });
+    queueOp({ op: 'remove', flow: f, ids: [id] });
+    renderCart();
+  }
+  function clearCart(f) {
+    carts[f] = [];
+    queueOp({ op: 'clear', flow: f });
+    if (f === 'group') setGroupTarget('');
+    renderCart();
+  }
+  function setGroupTarget(id) {
+    groupTarget = id || '';
+    queueOp({ op: 'target', id: groupTarget });
+    var sel = $('groupTarget');
+    if (sel) sel.value = groupTarget;
+    persistCarts();
+  }
+
+  // The cart is also kept in this device's storage: with the shared cart it holds the changes not yet sent
+  // (no signal), and with an older backend it is the cart itself. Either way a closed browser loses nothing.
   function cartKey() { return CART_KEY + '.' + (currentUnit() ? currentUnit().key : 'x') + '.' + (session && session.user ? session.user.toLowerCase() : 'x'); }
   function persistCarts() {
     if (!session || !cartsReady) return;
     try {
       var slim = {};
       Object.keys(carts).forEach(function (f) { slim[f] = carts[f].map(function (x) { return { id: x.id, cab: x._cartCabinetId || '' }; }); });
-      localStorage.setItem(cartKey(), JSON.stringify({ carts: slim, drafts: drafts, flow: flow, groupTarget: groupTarget, at: Date.now() }));
+      localStorage.setItem(cartKey(), JSON.stringify({ carts: slim, ops: sync.on ? sync.ops : [], drafts: drafts, flow: flow, groupTarget: groupTarget, at: Date.now() }));
     } catch (e) { /* storage unavailable: nothing to do */ }
   }
-  function restoreCarts() {
+  function restoreCarts(serverCart) {
     var saved = null;
     try { saved = JSON.parse(localStorage.getItem(cartKey()) || 'null'); } catch (e) { saved = null; }
-    if (!saved || !saved.carts) { cartsReady = true; return; }
+    saved = saved || {};
     var byId = {}; state.items.forEach(function (x) { byId[x.id] = x; });
-    var restored = 0;
-    Object.keys(carts).forEach(function (f) {
-      carts[f] = (saved.carts[f] || []).map(function (e) {
-        var x = byId[e.id]; if (!x) return null;
-        var copy = {}; for (var k in x) copy[k] = x[k];
-        copy._cartCabinetId = e.cab || ''; copy._at = 0;
-        return copy;
-      }).filter(Boolean);
-      restored += carts[f].length;
-    });
     drafts = saved.drafts || {};
-    if (saved.groupTarget && state.containers.some(function (c) { return c.cabinetId === saved.groupTarget; })) groupTarget = saved.groupTarget;
     if (saved.flow && FLOWS[saved.flow]) flow = saved.flow;
-    cartsReady = true;
+    Object.keys(carts).forEach(function (f) { carts[f] = []; });
+    groupTarget = '';
+    sync.on = !!(serverCart && typeof serverCart.rev === 'number');
+    sync.rev = -1;
+    sync.ops = [];
+    if (sync.on) {
+      sync.ops = (Array.isArray(saved.ops) ? saved.ops : []).filter(function (op) { return op && op.op; });
+      if (serverCart.rev === 0 && !sync.ops.length && saved.carts) {
+        // A cart kept on this device before carts were shared goes up once, oldest first so the order holds.
+        Object.keys(carts).forEach(function (f) {
+          (saved.carts[f] || []).slice().reverse().forEach(function (e) {
+            if (byId[e.id]) sync.ops.push({ op: 'add', flow: f, items: [{ id: e.id, cab: e.cab || '' }] });
+          });
+        });
+        if (saved.groupTarget) sync.ops.push({ op: 'target', id: saved.groupTarget });
+      }
+      cartsReady = true;
+      applyCartState(serverCart);
+      if (sync.ops.length) scheduleFlush(100);
+    } else {
+      Object.keys(carts).forEach(function (f) {
+        carts[f] = ((saved.carts && saved.carts[f]) || []).map(function (e) { return byId[e.id] ? cartCopy(byId[e.id], e.cab, 0) : null; }).filter(Boolean);
+      });
+      if (saved.groupTarget && state.containers.some(function (c) { return c.cabinetId === saved.groupTarget; })) groupTarget = saved.groupTarget;
+      cartsReady = true;
+    }
     setFlow(flow);
+    var restored = 0;
+    Object.keys(carts).forEach(function (f) { restored += carts[f].length; });
     if (restored) { page = 'scan'; toast('Keranjang dipulihkan: ' + restored + ' unit dari sebelumnya.'); }
   }
-  function removeFromCart(f, id) {
-    carts[f] = carts[f].filter(function (x) { return x.id !== id; });
+
+  // ---------- shared cart ----------
+  // Devices never send a whole cart, only "add these", "remove these", "clear", "target". The server applies
+  // them in order, so scans from two phones in the same second are both kept. Each device shows its own
+  // changes at once and applies the server's copy plus its unsent changes whenever the server answers.
+
+  function queueOp(op) {
+    if (!sync.on) return;
+    sync.ops.push(op);
+    persistCarts();
+    scheduleFlush(250);
+  }
+  function scheduleFlush(ms) {
+    clearTimeout(sync.timer);
+    sync.timer = setTimeout(flushOps, ms);
+  }
+  /** Sends the queued changes. Always resolves; on no signal it tries again in 5 s and keeps the changes. */
+  function flushOps() {
+    if (!sync.on || !session) return Promise.resolve();
+    if (sync.busy) return sync.busy;
+    if (!sync.ops.length) return Promise.resolve();
+    var sending = sync.ops.slice(0, 500);
+    sync.busy = api('cart.apply', { ops: sending }, { silent: true }).then(function (st) {
+      sync.ops = sync.ops.slice(sending.length);
+      sync.busy = null;
+      applyCartState(st, true);
+      persistCarts();
+      if (sync.ops.length) return flushOps();
+    }, function (e) {
+      sync.busy = null;
+      if (e.app) { sync.ops = sync.ops.slice(sending.length); toast(e.message, true); return; }
+      scheduleFlush(5000);
+    });
+    return sync.busy;
+  }
+  function applyOpLocal(op, byId, before) {
+    if (op.op === 'target') { groupTarget = op.id || ''; return; }
+    var f = op.flow;
+    if (!carts[f]) return;
+    if (op.op === 'clear') { carts[f] = []; return; }
+    if (op.op === 'remove') {
+      var gone = {}; (op.ids || []).forEach(function (id) { gone[id] = true; });
+      carts[f] = carts[f].filter(function (x) { return !gone[x.id]; });
+      return;
+    }
+    if (op.op === 'add') (op.items || []).forEach(function (e) {
+      for (var i = 0; i < carts[f].length; i++) if (carts[f][i].id === e.id) { if (e.cab) carts[f][i]._cartCabinetId = e.cab; return; }
+      if (byId[e.id]) carts[f].unshift(cartCopy(byId[e.id], e.cab, before[f + '|' + e.id] || 0));
+    });
+  }
+  /** Shows the server's cart plus this device's unsent changes. Older answers than the one shown are ignored. */
+  function applyCartState(st, force) {
+    if (!sync.on || !st || typeof st.rev !== 'number') return;
+    if (st.rev < sync.rev) return;
+    if (st.rev === sync.rev && !force && !sync.ops.length) return;
+    var first = sync.rev < 0;
+    sync.rev = st.rev;
+    var byId = {}; state.items.forEach(function (x) { byId[x.id] = x; });
+    var before = {};
+    Object.keys(carts).forEach(function (f) { carts[f].forEach(function (x) { before[f + '|' + x.id] = x._at || 0; }); });
+    var unknown = 0, now = Date.now();
+    Object.keys(carts).forEach(function (f) {
+      carts[f] = (((st.carts || {})[f]) || []).map(function (e) {
+        var x = byId[e.id];
+        if (!x) { unknown++; return null; }
+        var k = f + '|' + e.id;
+        return cartCopy(x, e.cab, k in before ? before[k] : (first ? 0 : now)); // arrivals from another device flash like a scan
+      }).filter(Boolean);
+    });
+    groupTarget = st.target || '';
+    sync.ops.forEach(function (op) { applyOpLocal(op, byId, before); });
+    if (groupTarget && !state.containers.some(function (c) { return c.cabinetId === groupTarget; })) unknown++;
+    var sel = $('groupTarget');
+    if (sel && !unknown) sel.value = groupTarget;
     renderCart();
+    if (flow === 'group') renderGroupPick();
+    if (unknown && !sync.refetching) {
+      // Another device scanned something this one has not loaded yet: read the sheet, then show it again.
+      sync.refetching = true;
+      refreshQuiet().then(function () {
+        sync.refetching = false;
+        if (sync.rev === st.rev) { sync.rev = st.rev - 1; applyCartState(st, true); }
+      });
+    }
+  }
+  function pollCart() {
+    if (!sync.on || !session || !state.me || sync.busy || sync.ops.length || sync.polling) return;
+    sync.polling = true;
+    sync.lastPoll = Date.now();
+    api('cart.get', {}, { silent: true }).then(function (st) {
+      sync.polling = false;
+      applyCartState(st);
+      if (st && st.dataRev) {
+        // Something was saved elsewhere (a check-out from a phone): re-read the sheet so stats and history match.
+        if (sync.dataRev && st.dataRev !== sync.dataRev) refreshQuiet();
+        sync.dataRev = st.dataRev;
+      }
+    }, function () { sync.polling = false; });
+  }
+  /** Every 3 s on the Scan page, every 15 s elsewhere, never while the tab is hidden. */
+  function syncTick() {
+    if (!sync.on || !session || document.hidden) return;
+    if (Date.now() - sync.lastPoll < (page === 'scan' ? 3000 : 15000)) return;
+    pollCart();
   }
 
   function renderCart() {
@@ -527,6 +681,7 @@
     if (flow === 'group') return saveGroup('assign');
     var dr = drafts[flow] || {};
     var n = cart.length;
+    var shownIds = cart.map(function (x) { return x.id; });
     var fields = '';
     if (flow === 'check') {
       fields = '<label>Hasil pemeriksaan *</label><select name="condition"><option value="BAIK"' + (dr.condition === 'BAIK' || !dr.condition ? ' selected' : '') + '>BAIK</option><option value="RUSAK"' + (dr.condition === 'RUSAK' ? ' selected' : '') + '>RUSAK</option></select>' +
@@ -562,33 +717,43 @@
       drafts[flow] = f;
       persistCarts();
       closeDialog();
-      commitFlow(f);
+      commitFlow(f, shownIds);
     });
   }
 
-  function commitFlow(f) {
-    var cart = carts[flow];
-    var payload = { action: FLOWS[flow].action, ids: cart.map(function (x) { return x.id; }), note: f.note || '' };
-    payload.cabinetIds = cart.map(function (x) { return x._cartCabinetId; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
-    if (flow === 'check') { payload.condition = f.condition; payload.damageNote = f.condition === 'RUSAK' ? f.damageNote : ''; }
-    else { payload.eventDate = f.eventDate; payload.location = f.location; payload.eventName = f.eventName || ''; if (flow === 'in') payload.storeLocation = f.storeLocation || ''; }
+  function commitFlow(f, shownIds) {
     var thisFlow = flow;
-    pendingBatch[thisFlow] = pendingBatch[thisFlow] || uuid();
-    api('commit', payload, { batchId: pendingBatch[thisFlow], loadingText: 'Menyimpan ' + cart.length + ' unit...' }).then(function (d) {
-      delete pendingBatch[thisFlow];
-      carts[thisFlow] = [];
-      drafts[thisFlow] = thisFlow === 'check' ? { condition: 'BAIK' } : {};
-      applySnapshot(d);
-      toast(d.message || 'Tersimpan.');
-      scanStatus('Tersimpan. Siap scan berikutnya.', 'ok');
-      buzz(true);
-    }).catch(function (e) {
-      if (e.invalid && e.invalid.length) {
-        var bad = {}; e.invalid.forEach(function (id) { bad[id.toLowerCase()] = true; });
-        carts[thisFlow] = carts[thisFlow].filter(function (x) { return !bad[x.id.toLowerCase()]; });
-        renderCart();
-        toast(e.message + ' Barang itu dikeluarkan dari keranjang; tekan Simpan lagi.', true);
-      } else toast(e.message, true);
+    // Send any scans still queued first, so the server's shared cart holds everything on this screen.
+    flushOps().then(function () {
+      var shown = {}; (shownIds || []).forEach(function (id) { shown[id] = true; });
+      var cart = carts[thisFlow].filter(function (x) { return !shownIds || shown[x.id]; });
+      if (!cart.length) { toast('Keranjang sudah kosong; mungkin sudah disimpan dari perangkat lain.', true); return; }
+      var payload = { action: FLOWS[thisFlow].action, ids: cart.map(function (x) { return x.id; }), note: f.note || '' };
+      payload.cabinetIds = cart.map(function (x) { return x._cartCabinetId; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+      payload.fromCart = sync.on && !sync.ops.length;
+      if (thisFlow === 'check') { payload.condition = f.condition; payload.damageNote = f.condition === 'RUSAK' ? f.damageNote : ''; }
+      else { payload.eventDate = f.eventDate; payload.location = f.location; payload.eventName = f.eventName || ''; if (thisFlow === 'in') payload.storeLocation = f.storeLocation || ''; }
+      pendingBatch[thisFlow] = pendingBatch[thisFlow] || uuid();
+      api('commit', payload, { batchId: pendingBatch[thisFlow], loadingText: 'Menyimpan ' + cart.length + ' unit...' }).then(function (d) {
+        delete pendingBatch[thisFlow];
+        var saved = {}; payload.ids.forEach(function (id) { saved[id] = true; });
+        carts[thisFlow] = carts[thisFlow].filter(function (x) { return !saved[x.id]; });
+        drafts[thisFlow] = thisFlow === 'check' ? { condition: 'BAIK' } : {};
+        applySnapshot(d);
+        if (d.cart) applyCartState(d.cart, true);
+        toast(d.message || 'Tersimpan.');
+        scanStatus('Tersimpan. Siap scan berikutnya.', 'ok');
+        buzz(true);
+      }).catch(function (e) {
+        if (e.invalid && e.invalid.length) {
+          var bad = {}; e.invalid.forEach(function (id) { bad[id.toLowerCase()] = true; });
+          var dropped = carts[thisFlow].filter(function (x) { return bad[x.id.toLowerCase()]; }).map(function (x) { return x.id; });
+          carts[thisFlow] = carts[thisFlow].filter(function (x) { return !bad[x.id.toLowerCase()]; });
+          if (dropped.length) queueOp({ op: 'remove', flow: thisFlow, ids: dropped });
+          renderCart();
+          toast(e.message + (carts[thisFlow].length ? ' Barang itu dikeluarkan dari keranjang; tekan Simpan lagi.' : ''), true);
+        } else toast(e.message, true);
+      });
     });
   }
 
@@ -600,6 +765,9 @@
     var title = mode === 'assign' ? 'Masukkan ' + ids.length + ' aset ke ' + groupTarget + '?' : 'Lepas ' + ids.length + ' aset dari wadahnya?';
     var text = mode === 'assign' ? 'Aset yang sudah ada di wadah lain akan dipindahkan.' : 'Relasi kabinet/box dihapus; aset tetap aktif.';
     confirmDialog(title, text, mode === 'assign' ? 'Simpan' : 'Lepas', mode !== 'assign').then(function (yes) {
+      if (!yes) return null;
+      return flushOps().then(function () { return true; });
+    }).then(function (yes) {
       if (!yes) return;
       var key = 'group-' + mode;
       pendingBatch[key] = pendingBatch[key] || uuid();
@@ -607,14 +775,18 @@
         : api('container.unassign', { ids: ids }, { batchId: pendingBatch[key], loadingText: 'Menyimpan...' });
       call.then(function (d) {
         delete pendingBatch[key];
-        carts.group = [];
+        var saved = {}; ids.forEach(function (id) { saved[id] = true; });
+        carts.group = carts.group.filter(function (x) { return !saved[x.id]; });
         applySnapshot(d);
+        if (d.cart) applyCartState(d.cart, true);
         toast(d.message || 'Tersimpan.');
         buzz(true);
       }).catch(function (e) {
         if (e.invalid && e.invalid.length) {
           var bad = {}; e.invalid.forEach(function (id) { bad[id.toLowerCase()] = true; });
+          var dropped = carts.group.filter(function (x) { return bad[x.id.toLowerCase()]; }).map(function (x) { return x.id; });
           carts.group = carts.group.filter(function (x) { return !bad[x.id.toLowerCase()]; });
+          if (dropped.length) queueOp({ op: 'remove', flow: 'group', ids: dropped });
           renderCart();
         }
         toast(e.message, true);
@@ -808,7 +980,7 @@
         var a = b.dataset.a;
         closeDialog();
         if (a === 'check' || a === 'out' || a === 'in') addContainerToCart(cid, a);
-        if (a === 'group') { groupTarget = cid; carts.group = []; goScan('group'); $('groupTarget').value = groupTarget; renderGroupPick(); }
+        if (a === 'group') { clearCart('group'); setGroupTarget(cid); goScan('group'); $('groupTarget').value = groupTarget; renderGroupPick(); }
         if (a === 'edit') editContainer(cid);
       });
     });
@@ -947,9 +1119,13 @@
     var items = state.items.filter(function (x) { return labelSelected[x.id]; });
     if (!items.length) { toast('Pilih minimal satu barang.', true); return; }
     var area = $('printArea');
-    area.className = 'qrgrid size-' + $('labelSize').value;
+    var paper = $('labelPaper').value === 'sheet' ? 'sheet' : 'roll';
+    try { localStorage.setItem(LABEL_KEY, JSON.stringify({ paper: paper, size: $('labelSize').value })); } catch (e) { /* ignore */ }
+    area.className = 'qrgrid ' + paper + ' size-' + $('labelSize').value;
     area.innerHTML = items.map(function (x) {
-      return '<div class="qrcard">' + qrSvg(x.qrValue || x.id) + '<strong>' + esc(x.id) + '</strong><small>' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) + '</small></div>';
+      // Long IDs may break only after - . / _ so a narrow label never splits them letter by letter.
+      var id = esc(x.id).replace(/([-.\/_])/g, '$1<wbr>');
+      return '<div class="qrcard">' + qrSvg(x.qrValue || x.id) + '<div class="txt"><strong>' + id + '</strong><small>' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) + '</small></div></div>';
     }).join('');
     $('toast').className = 'toast';
     setTimeout(function () { window.print(); }, 150);
@@ -1045,7 +1221,7 @@
     $('camStop').addEventListener('click', function () { stopCamera(false); scanStatus('Kamera dihentikan.', ''); });
     $('scanAdd').addEventListener('click', function () { ensureAudio(); var v = $('scanInput').value; $('scanInput').value = ''; handleCode(v); $('scanInput').focus(); });
     $('scanInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('scanAdd').click(); } });
-    $('cartClear').addEventListener('click', function () { carts[flow] = []; if (flow === 'group') { groupTarget = ''; $('groupTarget').value = ''; } renderCart(); renderGroupPick(); });
+    $('cartClear').addEventListener('click', function () { clearCart(flow); renderGroupPick(); });
     $('cartList').addEventListener('click', function (e) { var b = e.target.closest('[data-remove]'); if (b) { removeFromCart(flow, b.dataset.remove); if (flow === 'group') renderGroupPick(); } });
     $('saveBtn').addEventListener('click', saveFlow);
     $('groupUnassign').addEventListener('click', function () { saveGroup('unassign'); });
@@ -1053,12 +1229,11 @@
       var next = $('groupTarget').value;
       if (carts.group.length && groupTarget && next !== groupTarget) {
         confirmDialog('Ganti tujuan?', 'Keranjang berisi aset untuk ' + groupTarget + '. Kosongkan keranjang untuk ganti ke ' + (next || 'tujuan lain') + '?', 'Kosongkan', true).then(function (yes) {
-          if (yes) { carts.group = []; groupTarget = next; renderCart(); renderGroupPick(); } else $('groupTarget').value = groupTarget;
+          if (yes) { clearCart('group'); setGroupTarget(next); renderGroupPick(); } else $('groupTarget').value = groupTarget;
         });
         return;
       }
-      groupTarget = next;
-      persistCarts();
+      setGroupTarget(next);
     });
     $('groupSearch').addEventListener('input', renderGroupPick);
     $('groupPickList').addEventListener('click', function (e) {
@@ -1107,6 +1282,11 @@
     $('labelSelectAll').addEventListener('click', function () { labelMatches().forEach(function (x) { labelSelected[x.id] = true; }); renderLabels(); });
     $('labelClear').addEventListener('click', function () { labelSelected = {}; $('printArea').innerHTML = ''; renderLabels(); });
     $('labelPrint').addEventListener('click', printLabels);
+    try {
+      var lp = JSON.parse(localStorage.getItem(LABEL_KEY) || 'null');
+      if (lp && lp.paper) $('labelPaper').value = lp.paper;
+      if (lp && lp.size) $('labelSize').value = lp.size;
+    } catch (e) { /* first visit or no storage */ }
 
     $('refreshBtn').addEventListener('click', function () { refreshQuiet(true); });
 
@@ -1132,13 +1312,16 @@
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { stopCamera(true); stopLookup(); return; }
       if (page === 'scan' && cameraWanted() && !cameraOn && !$('dlg').open) startCamera();
-      // Coming back to this tab (e.g. after saving on a phone): re-read the sheet, at most once a minute.
+      // Coming back to this tab (e.g. after saving on a phone): re-read the sheet, at most once a minute,
+      // and pick up the shared cart straight away.
       if (session && state.me && Date.now() - lastRefresh > 60000) refreshQuiet();
+      pollCart();
     });
+    setInterval(syncTick, 1000);
   }
 
   // Exposed for the headless smoke test and for debugging from the console.
-  window.inventoryApp = { handleCode: handleCode, setFlow: setFlow, showPage: showPage, saveFlow: saveFlow, carts: carts, state: function () { return state; } };
+  window.inventoryApp = { handleCode: handleCode, setFlow: setFlow, showPage: showPage, saveFlow: saveFlow, carts: carts, state: function () { return state; }, sync: sync, pollCart: pollCart, flushOps: flushOps };
 
   init();
 })();

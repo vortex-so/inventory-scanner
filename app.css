@@ -178,17 +178,22 @@ tr.sentinel td { padding: 4px; border: 0; }
 .flowtabs button.active .count { color: var(--muted); }
 .flowtabs button.has .count { color: var(--gold); }
 .viewfinder { position: relative; width: 100%; max-width: 440px; margin: 0 auto; aspect-ratio: 1; border-radius: var(--r-lg); overflow: hidden; background: #000; border: 1px solid var(--line); }
-#reader { position: absolute; inset: 0; }
-#reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
-#reader img { display: none; }
-.viewfinder .corners { position: absolute; inset: 14%; pointer-events: none; }
+#reader, #lookupReader { position: absolute; inset: 0; }
+/* Phones deliver a tall 3:4 picture; it is cropped to the square from the centre. The scanning library sizes
+   its own box and shading to the uncropped picture, so they land low and cut off: hide them and keep our
+   corners, which mark the centred 75 % square the library reads. Do not position the video absolutely:
+   the library then stops reading (tested with a fake camera). */
+.viewfinder video { width: 100% !important; height: 100% !important; object-fit: cover; }
+.viewfinder #qr-shaded-region { display: none !important; }
+.viewfinder img { display: none; }
+.viewfinder .corners { position: absolute; inset: 12.5%; pointer-events: none; z-index: 2; }
 .viewfinder .corners::before, .viewfinder .corners::after, .viewfinder .corners i::before, .viewfinder .corners i::after { content: ""; position: absolute; width: 26px; height: 26px; border: 3px solid var(--red); border-radius: 4px; }
 .viewfinder .corners::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
 .viewfinder .corners::after { top: 0; right: 0; border-left: 0; border-bottom: 0; }
 .viewfinder .corners i::before { bottom: 0; left: 0; border-right: 0; border-top: 0; }
 .viewfinder .corners i::after { bottom: 0; right: 0; border-left: 0; border-top: 0; }
 .viewfinder .hint { position: absolute; left: 0; right: 0; bottom: 14px; text-align: center; color: var(--muted); font-size: 12px; pointer-events: none; }
-.viewfinder.on .hint, .viewfinder.on .corners { display: none; }
+.viewfinder.on .hint { display: none; }
 .scanstatus { margin-top: 10px; font-size: 13px; padding: 9px 12px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); color: var(--fg-2); min-height: 38px; overflow-wrap: anywhere; display: flex; align-items: center; gap: 8px; }
 .scanstatus::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
 .scanstatus.ok { background: var(--green-bg); border-color: var(--green-line); color: var(--green); } .scanstatus.ok::before { background: var(--green); }
@@ -244,16 +249,40 @@ dialog p { color: var(--fg-2); }
 .qrcard svg { display: block; margin: 0 auto; }
 .qrcard strong { display: block; line-height: 1.1; margin-top: 1mm; overflow-wrap: anywhere; }
 .qrcard small { display: block; line-height: 1.1; color: #333; overflow-wrap: anywhere; }
+.qrgrid.size-15 { --qr: 15mm; } .qrgrid.size-20 { --qr: 20mm; } .qrgrid.size-25 { --qr: 25mm; }
+.qrcard .txt { max-width: 100%; }
 .qrgrid.size-15 .qrcard { width: 23mm; } .qrgrid.size-15 svg { width: 15mm; height: 15mm; } .qrgrid.size-15 strong { font-size: 6pt; } .qrgrid.size-15 small { font-size: 5pt; }
 .qrgrid.size-20 .qrcard { width: 28mm; padding: 2mm; } .qrgrid.size-20 svg { width: 20mm; height: 20mm; } .qrgrid.size-20 strong { font-size: 7pt; } .qrgrid.size-20 small { font-size: 5.5pt; }
 .qrgrid.size-25 .qrcard { width: 34mm; padding: 2mm; } .qrgrid.size-25 svg { width: 25mm; height: 25mm; } .qrgrid.size-25 strong { font-size: 8pt; } .qrgrid.size-25 small { font-size: 6pt; }
 
 @media print {
+  /* Margin 0 also removes Chrome's date / address / page-number lines, which ate most of a 29 mm label. */
+  @page { margin: 0; }
   html, body { background: #fff !important; color: #111; padding: 0; }
+  /* A4 or any sheet: a grid of cut-out labels inside an 8 mm border (#printArea.sheet below). */
+  /* Label printer (Brother QL and similar): one label per page, sized to whatever label is loaded. */
+  .qrgrid.roll { display: block; padding: 0; }
+  .qrgrid.roll .qrcard { width: 100vw !important; height: 100vh; margin: 0; padding: 1.5mm; border: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .8mm;
+    break-after: page; page-break-after: always; overflow: hidden; }
+  .qrgrid.roll .qrcard:last-child { break-after: auto; page-break-after: auto; }
+  .qrgrid.roll .qrcard svg { width: min(var(--qr), calc(100vw - 3mm), calc(100vh - 14mm)) !important; height: auto !important; margin: 0; }
+  .qrgrid.roll .qrcard strong { margin-top: 0; overflow-wrap: normal; }
+  .qrgrid.roll .qrcard small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .topbar, .nav, .sidebar, .toast, #loading, .no-print, .page, .ptr { display: none !important; }
   #appView { display: block !important; }
   #page-labels { display: block !important; }
   .main { max-width: none; padding: 0; }
+  /* Nothing but the labels may take space, or a label printer feeds one blank sticker at the end. */
+  html, body, #app, #appView, .main, #page-labels, #printArea { margin: 0 !important; padding: 0 !important; min-height: 0 !important; height: auto !important; border: 0 !important; }
+  #printArea.sheet { padding: 8mm !important; }
+}
+
+/* A label fed sideways (90 x 29 mm): code on the left, text on the right. */
+@media print and (orientation: landscape) {
+  .qrgrid.roll .qrcard { flex-direction: row; justify-content: flex-start; text-align: left; gap: 2mm; padding: 1.5mm 3mm; }
+  .qrgrid.roll .qrcard svg { width: min(var(--qr), calc(100vh - 3mm)) !important; flex: 0 0 auto; }
+  .qrgrid.roll .qrcard .txt { min-width: 0; }
 }
 
 @media (max-width: 640px) { #pageSub, .who .txt { display: none; } }

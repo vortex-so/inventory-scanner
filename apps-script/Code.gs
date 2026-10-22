@@ -14,10 +14,10 @@
  * and gets back { ok: true, data } or { ok: false, error, invalid? }.
  */
 
-var VERSION = '2026-10-21';
+var VERSION = '2026-10-22';
 var TZ = 'Asia/Jakarta';
 
-var TABS = { items: 'Items', containers: 'Containers', transactions: 'Transactions', users: 'Users' };
+var TABS = { items: 'Items', containers: 'Containers', transactions: 'Transactions', users: 'Users', carts: 'Carts' };
 
 var ITEM_COLS = ['id', 'qr_value', 'type', 'name', 'category', 'location', 'status', 'condition',
   'damage_note', 'cabinet_id', 'active', 'created_at', 'updated_at', 'last_checked_at', 'last_user'];
@@ -25,6 +25,8 @@ var CONTAINER_COLS = ['cabinet_id', 'container_type', 'name', 'category', 'note'
 var TXN_COLS = ['ts', 'batch_id', 'action', 'item_id', 'item_name', 'item_type', 'event_date', 'location',
   'event_name', 'cabinet_id', 'condition', 'damage_note', 'note', 'user'];
 var USER_COLS = ['name', 'code', 'role', 'active'];
+// One row per login: the cart that login's phones and laptops share until Simpan. data is JSON.
+var CART_COLS = ['user', 'rev', 'data', 'updated_at'];
 
 var STATUS_IN = 'DI GUDANG';
 var STATUS_OUT = 'DI LUAR';
@@ -41,7 +43,10 @@ var ITEM_TYPES = ['MODUL', 'BOX', 'POWER SUPPLY', 'MOBO', 'BRACKET', 'POWER PANE
 
 var ADMIN_ONLY = { 'item.import': true, 'item.update': true, 'item.deactivate': true };
 var MUTATING = { 'commit': true, 'item.import': true, 'item.update': true, 'item.deactivate': true,
-  'container.save': true, 'container.assign': true, 'container.unassign': true };
+  'container.save': true, 'container.assign': true, 'container.unassign': true, 'cart.apply': true };
+var CART_FLOWS = ['check', 'out', 'in', 'group'];
+var FLOW_OF_ACTION = { INSPEKSI: 'check', KELUAR: 'out', MASUK: 'in' };
+var MAX_CART = 3000;
 
 var RECENT_TXN = 300;
 var MAX_IDS = 2000;
@@ -70,6 +75,7 @@ function setup() {
   ensureTab(ss, TABS.items, ITEM_COLS);
   ensureTab(ss, TABS.containers, CONTAINER_COLS);
   ensureTab(ss, TABS.transactions, TXN_COLS);
+  ensureTab(ss, TABS.carts, CART_COLS);
   var users = ensureTab(ss, TABS.users, USER_COLS);
   if (users.getLastRow() < 2) {
     var code = String(Math.floor(100000 + Math.random() * 900000));
@@ -92,7 +98,9 @@ var HANDLERS = {
   'container.nextId': hContainerNextId,
   'container.save': hContainerSave,
   'container.assign': hContainerAssign,
-  'container.unassign': hContainerUnassign
+  'container.unassign': hContainerUnassign,
+  'cart.get': hCartGet,
+  'cart.apply': hCartApply
 };
 
 function handleRequest(body) {
@@ -158,6 +166,7 @@ function hBootstrap(ss, payload, user) {
   snap.version = VERSION;
   snap.types = ITEM_TYPES;
   snap.containerTypes = CONTAINER_TYPES;
+  snap.cart = publicCart(ss, loadCart(ss, user).state);
   return snap;
 }
 
@@ -191,6 +200,20 @@ function hCommit(ss, payload, user, batchId) {
   if (FLOW_ACTIONS.indexOf(action) < 0) throw new AppError('Tindakan tidak dikenal: ' + action);
   var ids = cleanIds(payload.ids);
   if (!ids.length) throw new AppError('Keranjang kosong.');
+  var flowKey = FLOW_OF_ACTION[action];
+  var skippedNote = '';
+  if (payload.fromCart === true) {
+    // Two devices on one login can both press Simpan; only what is still in the shared cart is saved.
+    var shared = loadCart(ss, user);
+    if (shared.row) {
+      var inCart = {};
+      shared.state.carts[flowKey].forEach(function (e) { inCart[e.id.toLowerCase()] = true; });
+      var gone = ids.filter(function (id) { return !inCart[id.toLowerCase()]; });
+      if (gone.length === ids.length) throw new AppError('Keranjang ini sudah disimpan atau dikosongkan dari perangkat lain.', gone);
+      if (gone.length) skippedNote = ' ' + gone.length + ' ID dilewati karena sudah tidak ada di keranjang.';
+      ids = ids.filter(function (id) { return inCart[id.toLowerCase()]; });
+    }
+  }
 
   var table = readTable(ss, TABS.items, ITEM_COLS);
   var byId = indexItems(table.rows);
@@ -236,8 +259,11 @@ function hCommit(ss, payload, user, batchId) {
   writeTable(table, ITEM_COLS);
   appendRows(ss, TABS.transactions, TXN_COLS, txns);
 
+  var cartState = dropFromCart(ss, user, flowKey, ids);
   var verb = { INSPEKSI: 'Pengecekan', KELUAR: 'Barang keluar', MASUK: 'Barang masuk' }[action];
-  return withMessage(snapshot(ss), verb + ' tersimpan untuk ' + ids.length + ' unit.');
+  var snap = withMessage(snapshot(ss), verb + ' tersimpan untuk ' + ids.length + ' unit.' + skippedNote);
+  if (cartState) snap.cart = publicCart(ss, cartState);
+  return snap;
 }
 
 function hItemImport(ss, payload, user, batchId) {
@@ -383,7 +409,10 @@ function hContainerAssign(ss, payload, user, batchId) {
     writeTable(table, ITEM_COLS);
     appendRows(ss, TABS.transactions, TXN_COLS, txns);
   }
-  return withMessage(snapshot(ss), moved + ' aset masuk ke ' + container.cabinet_id + '.');
+  var cartState = dropFromCart(ss, user, 'group', ids);
+  var snap = withMessage(snapshot(ss), moved + ' aset masuk ke ' + container.cabinet_id + '.');
+  if (cartState) snap.cart = publicCart(ss, cartState);
+  return snap;
 }
 
 function hContainerUnassign(ss, payload, user, batchId) {
@@ -408,7 +437,109 @@ function hContainerUnassign(ss, payload, user, batchId) {
     writeTable(table, ITEM_COLS);
     appendRows(ss, TABS.transactions, TXN_COLS, txns);
   }
-  return withMessage(snapshot(ss), count + ' aset dilepas dari wadahnya.');
+  var cartState = dropFromCart(ss, user, 'group', ids);
+  var snap = withMessage(snapshot(ss), count + ' aset dilepas dari wadahnya.');
+  if (cartState) snap.cart = publicCart(ss, cartState);
+  return snap;
+}
+
+// ---------- shared cart: every device on one login sees the same cart ----------
+// Devices send small operations ("add this ID", "remove", "clear"), never a whole cart, so two phones
+// scanning in the same second both keep their scans. Simpan removes the saved IDs for every device.
+
+function hCartGet(ss, payload, user) {
+  return publicCart(ss, loadCart(ss, user).state);
+}
+
+function hCartApply(ss, payload, user) {
+  var ops = Array.isArray(payload.ops) ? payload.ops : [];
+  if (ops.length > 1000) throw new AppError('Terlalu banyak perubahan sekaligus.');
+  var c = loadCart(ss, user);
+  ops.forEach(function (op) { applyCartOp(c.state, op || {}); });
+  saveCart(ss, c, user);
+  return publicCart(ss, c.state);
+}
+
+function emptyCarts() { return { check: [], out: [], in: [], group: [] }; }
+
+function loadCart(ss, user) {
+  var sheet = ss.getSheetByName(TABS.carts);
+  var table = sheet ? readTable(ss, TABS.carts, CART_COLS) : { sheet: null, rows: [] };
+  var key = user.name.toLowerCase(), row = null;
+  for (var i = 0; i < table.rows.length; i++) if (table.rows[i].user.toLowerCase() === key) { row = table.rows[i]; break; }
+  var st = { rev: 0, carts: emptyCarts(), target: '' };
+  if (row) {
+    st.rev = Number(row.rev) || 0;
+    var d = {};
+    try { d = JSON.parse(row.data || '{}') || {}; } catch (e) { d = {}; }
+    CART_FLOWS.forEach(function (f) {
+      var list = d.carts && Array.isArray(d.carts[f]) ? d.carts[f] : [];
+      st.carts[f] = list.filter(function (e) { return e && str(e.id); }).map(function (e) { return { id: str(e.id), cab: str(e.cab) }; });
+    });
+    st.target = str(d.target);
+  }
+  return { table: table, row: row, state: st };
+}
+
+function saveCart(ss, c, user) {
+  c.state.rev++;
+  var data = JSON.stringify({ carts: c.state.carts, target: c.state.target });
+  if (data.length > 45000) throw new AppError('Keranjang terlalu besar. Simpan sebagian dulu.');
+  var values = [user.name, String(c.state.rev), data, nowStr()];
+  if (c.row) {
+    c.table.sheet.getRange(c.row._row, 1, 1, CART_COLS.length).setValues([values]);
+  } else {
+    if (!ss.getSheetByName(TABS.carts)) ensureTab(ss, TABS.carts, CART_COLS);
+    appendRows(ss, TABS.carts, CART_COLS, [values]);
+  }
+}
+
+function applyCartOp(st, op) {
+  var kind = str(op.op), f = str(op.flow);
+  if (kind === 'target') { st.target = str(op.id); return; }
+  if (CART_FLOWS.indexOf(f) < 0) return;
+  if (kind === 'clear') { st.carts[f] = []; return; }
+  if (kind === 'remove') {
+    var gone = {};
+    cleanIds(op.ids).forEach(function (id) { gone[id.toLowerCase()] = true; });
+    st.carts[f] = st.carts[f].filter(function (e) { return !gone[e.id.toLowerCase()]; });
+    return;
+  }
+  if (kind === 'add') {
+    var cart = st.carts[f];
+    (Array.isArray(op.items) ? op.items : []).forEach(function (e) {
+      var id = str(e && e.id);
+      if (!id) return;
+      var cab = str(e.cab);
+      for (var i = 0; i < cart.length; i++) {
+        if (cart[i].id.toLowerCase() === id.toLowerCase()) { if (cab) cart[i].cab = cab; return; }
+      }
+      if (cart.length >= MAX_CART) throw new AppError('Keranjang penuh (' + MAX_CART + ' unit). Simpan dulu.');
+      cart.unshift({ id: id, cab: cab });
+    });
+  }
+}
+
+/** After a save: the saved IDs leave this login's shared cart. Returns the new state, or null if there is no cart. */
+function dropFromCart(ss, user, flowKey, ids) {
+  var c = loadCart(ss, user);
+  if (!c.row) return null;
+  var before = c.state.carts[flowKey].length;
+  applyCartOp(c.state, { op: 'remove', flow: flowKey, ids: ids });
+  if (c.state.carts[flowKey].length !== before) saveCart(ss, c, user);
+  return c.state;
+}
+
+function publicCart(ss, st) {
+  return { rev: st.rev, carts: st.carts, target: st.target, dataRev: dataRev(ss) };
+}
+
+/** Changes whenever a save adds rows anywhere, so an idle laptop knows to re-read the sheet. */
+function dataRev(ss) {
+  return [TABS.items, TABS.containers, TABS.transactions].map(function (n) {
+    var sh = ss.getSheetByName(n);
+    return sh ? sh.getLastRow() : 0;
+  }).join('.');
 }
 
 // ---------- snapshot and stats ----------
@@ -428,6 +559,7 @@ function snapshot(ss) {
     containers: containers.map(function (c) { return publicContainer(c, items); }),
     stats: stats,
     transactions: recent,
+    dataRev: dataRev(ss),
     generatedAt: nowStr()
   };
 }
