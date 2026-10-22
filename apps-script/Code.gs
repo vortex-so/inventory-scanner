@@ -1,3 +1,4 @@
+/** @OnlyCurrentDoc  Asks Google for access to this one spreadsheet only, not all of the owner's. */
 /**
  * Inventory Scanner, Apps Script backend.
  *
