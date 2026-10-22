@@ -141,6 +141,13 @@ await sleep(300);
 check('typed look-up opens the item sheet', (await evaluate(`document.querySelector('#dlg h2') && document.querySelector('#dlg h2').textContent`)) === '1-MVG-12-25-NY-MD.002');
 await evaluate(`document.querySelector('#dlg [data-a="close"]').click(); true`);
 
+// A phone that still holds a cart saved by the previous app version (no shared cart yet) merges it in once.
+await evaluate(`(() => { const k = Object.keys(localStorage).find(k => k.startsWith('inventory-scanner.cart.')); const v = JSON.parse(localStorage.getItem(k));
+  localStorage.setItem(k, JSON.stringify({ carts: { check: [{ id: '1-MVG-12-25-NY-MD.035', cab: '' }], out: [], in: [], group: [] }, drafts: v.drafts, flow: 'check' })); return true; })()`);
+await send('Page.reload'); await sleep(1800);
+const merged = (await apiCall('cart.get')).data;
+check('a cart from the previous app version is merged into the shared cart', merged.carts.check.some(e => e.id === '1-MVG-12-25-NY-MD.035') && merged.carts.group.some(e => e.id === '1-MVG-12-25-NY-MD.031'));
+
 check('no console errors or exceptions', errors.length === 0, errors.join(' | ').slice(0, 400));
 console.log(failed ? `\n${failed} check(s) failed` : '\nall smoke checks passed');
 ws.close();

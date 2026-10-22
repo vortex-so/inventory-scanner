@@ -518,8 +518,10 @@
     sync.ops = [];
     if (sync.on) {
       sync.ops = (Array.isArray(saved.ops) ? saved.ops : []).filter(function (op) { return op && op.op; });
-      if (serverCart.rev === 0 && !sync.ops.length && saved.carts) {
-        // A cart kept on this device before carts were shared goes up once, oldest first so the order holds.
+      // A cart kept on this device before carts were shared (saved without an ops list), or while the backend
+      // was older, goes up once and merges with what other devices already put in; oldest first, order holds.
+      var legacy = saved.carts && !('ops' in saved);
+      if ((legacy || serverCart.rev === 0) && !sync.ops.length && saved.carts) {
         Object.keys(carts).forEach(function (f) {
           (saved.carts[f] || []).slice().reverse().forEach(function (e) {
             if (byId[e.id]) sync.ops.push({ op: 'add', flow: f, items: [{ id: e.id, cab: e.cab || '' }] });
