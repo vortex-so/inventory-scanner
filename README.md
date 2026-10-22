@@ -4,6 +4,8 @@ Phones scan the QR labels on equipment to check it out, check it back in, record
 it into cabinets and boxes. Every scan lands in a Google Sheet. Built for the Neutron LED screen that
 Vortex's media team and KPTJ run; offered to other units later.
 
+**Status:** pilot, not yet deployed · **Default branch:** `main` · **Source of truth:** github.com/vortex-so/inventory-scanner · **Build/release:** none; GitHub Pages serves `main`, and the backend is pasted into Apps Script
+
 It replaces an earlier Apps Script prototype whose camera lived on a second browser tab. Here the camera,
 the cart and the Save button are on one page, so a scan cannot get lost, and a USB scanner or typed ID
 goes into the same field.
