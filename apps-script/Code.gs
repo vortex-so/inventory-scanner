@@ -2,7 +2,7 @@
 /**
  * Inventory Scanner, Apps Script backend.
  *
- * One Google Sheet with four tabs: Items, Containers, Transactions, Users.
+ * One Google Sheet with five tabs: Items, Containers, Transactions, Users, Carts (open carts per login).
  * The sheet is the database, the admin panel and the backup (version history).
  * This script is its only gatekeeper: it checks the access code, enforces the
  * movement rules, serialises writes with a lock and appends the log.

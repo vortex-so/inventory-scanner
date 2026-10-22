@@ -122,7 +122,7 @@ with the same column order; `batch_id` may be empty.
 The dev server runs the real `Code.gs` in Node against an in-memory sheet and shows that sheet live:
 
 ```
-node test/dev-server.mjs        # app on http://localhost:8787, the four tabs on http://localhost:8787/sheet
+node test/dev-server.mjs        # app on http://localhost:8787, the sheet tabs on http://localhost:8787/sheet
 ```
 
 Save something in the app and watch the rows appear on `/sheet` (new rows are green). To try a real
