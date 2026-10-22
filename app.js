@@ -86,9 +86,12 @@
     $('loadingText').textContent = text || 'Memuat...';
     $('loading').className = show ? 'show' : '';
   }
-  function buzz(ok) {
-    if (navigator.vibrate) { try { navigator.vibrate(ok ? 60 : [60, 60, 60]); } catch (e) { /* ignore */ } }
-    beep(ok);
+  /** kind: true or 'ok' = read and added, 'warn' = already in the cart, false or 'err' = not found / refused. */
+  function buzz(kind) {
+    kind = kind === true ? 'ok' : kind === false ? 'err' : kind;
+    var pattern = { ok: 60, warn: [40, 60, 40], err: [70, 60, 70, 60, 70] }[kind] || 60;
+    if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) { /* ignore */ } }
+    beep(kind);
   }
   // A short tone besides the vibration: warehouses are loud and the phone is not always in a hand.
   function ensureAudio() {
@@ -100,7 +103,8 @@
     try {
       if (audio.state === 'suspended') audio.resume();
       var t = audio.currentTime;
-      var tones = ok ? [[1046, 0, .07]] : [[330, 0, .09], [330, .12, .09]];
+      // iPhones do not vibrate for websites, so the three outcomes must sound different.
+      var tones = { ok: [[1046, 0, .06], [1568, .07, .08]], warn: [[660, 0, .07], [660, .11, .07]], err: [[300, 0, .16], [220, .18, .2]] }[ok] || [[1046, 0, .07]];
       tones.forEach(function (tone) {
         var o = audio.createOscillator(), g = audio.createGain();
         o.type = 'sine'; o.frequency.value = tone[0];
@@ -341,6 +345,21 @@
     var el = $('scanStatus');
     el.textContent = text;
     el.className = 'scanstatus' + (kind ? ' ' + kind : '');
+    if (kind) { void el.offsetWidth; el.classList.add('pulse'); } // re-flash even when the text looks alike
+  }
+  var flashTimer = 0;
+  /** The card over the camera: what was just read, in large type, so each scan is visibly a new one. */
+  function flashScan(kind, title, sub) {
+    var vf = $('viewfinder'), el = $('scanFlash');
+    if (!vf || !el) return;
+    clearTimeout(flashTimer);
+    el.className = 'scanflash ' + kind;
+    el.innerHTML = '<span class="ic">' + ({ ok: '&#10003;', warn: '!', err: '&#10005;' }[kind]) + '</span><span><b>' + esc(title) + '</b>' + (sub ? '<small>' + esc(sub) + '</small>' : '') + '</span>';
+    vf.classList.remove('flash-ok', 'flash-warn', 'flash-err');
+    void vf.offsetWidth; // restart the flash for a second scan of the same kind
+    vf.classList.add('flash-' + kind);
+    el.classList.add('show');
+    flashTimer = setTimeout(function () { el.classList.remove('show'); vf.classList.remove('flash-' + kind); }, kind === 'ok' ? 1600 : 2400);
   }
   function cameraWanted() { try { return localStorage.getItem(CAMERA_KEY) === '1'; } catch (e) { return false; } }
   function rememberCamera(on) { try { if (on) localStorage.setItem(CAMERA_KEY, '1'); else localStorage.removeItem(CAMERA_KEY); } catch (e) { /* ignore */ } }
@@ -472,7 +491,9 @@
   }
   function onDecoded(text) {
     var now = Date.now();
-    if (text === lastCode && now - lastAt < 2000) return;
+    // A label held in view is read again every fraction of a second: stay quiet until a different label is
+    // read, or this one has been out of view for 3 s (then it is a deliberate second scan and gets the amber card).
+    if (text === lastCode && now - lastAt < 3000) { lastAt = now; return; }
     lastCode = text; lastAt = now;
     handleCode(text);
   }
@@ -506,6 +527,7 @@
     if (!code) return Promise.resolve(false);
     return resolveCode(code).then(function (hit) { return addHit(hit, code); }).catch(function (e) {
       scanStatus('Tidak ditemukan: ' + code, 'err');
+      flashScan('err', code, 'Tidak ditemukan di inventaris');
       buzz(false);
       toast(e.message, true);
       return false;
@@ -516,26 +538,47 @@
     if (flow === 'group') {
       if (hit.container) {
         if (carts.group.length && groupTarget && groupTarget !== hit.container.cabinetId) {
-          scanStatus('Keranjang masih untuk ' + groupTarget + '. Kosongkan dulu untuk ganti tujuan.', 'err'); buzz(false); return false;
+          scanStatus('Keranjang masih untuk ' + groupTarget + '. Kosongkan dulu untuk ganti tujuan.', 'err');
+          flashScan('err', hit.container.cabinetId, 'Keranjang masih untuk ' + groupTarget);
+          buzz(false); return false;
         }
         setGroupTarget(hit.container.cabinetId);
         scanStatus('Tujuan: ' + hit.container.cabinetId + ' (' + hit.container.name + '). Sekarang scan isinya.', 'ok');
+        flashScan('ok', hit.container.cabinetId, 'Tujuan dipilih. Sekarang scan isinya.');
         buzz(true); renderGroupPick(); persistCarts(); return true;
       }
-      if (!groupTarget) { scanStatus('Pilih atau scan kabinet/box tujuan dulu.', 'err'); buzz(false); return false; }
-      if (pushCart(hit.item, 'group', '')) { scanStatus('Masuk keranjang: ' + hit.item.id, 'ok'); buzz(true); return true; }
-      scanStatus('Sudah ada di keranjang: ' + hit.item.id, 'err'); buzz(false); return false;
+      if (!groupTarget) {
+        scanStatus('Pilih atau scan kabinet/box tujuan dulu.', 'err');
+        flashScan('err', hit.item.id, 'Scan kabinet/box tujuan dulu');
+        buzz(false); return false;
+      }
+      return addedFeedback(pushCart(hit.item, 'group', ''), hit.item, 'group');
     }
     var added = 0, total = 0;
     if (hit.container) {
       hit.members.forEach(function (m) { total++; if (pushCart(m, flow, hit.container.cabinetId)) added++; });
       if (hit.item) { total++; if (pushCart(hit.item, flow, '')) added++; }
-      if (!total) { scanStatus('Wadah ' + hit.container.cabinetId + ' belum punya isi.', 'err'); buzz(false); return false; }
+      if (!total) {
+        scanStatus('Wadah ' + hit.container.cabinetId + ' belum punya isi.', 'err');
+        flashScan('err', hit.container.cabinetId, 'Wadah ini belum punya isi');
+        buzz(false); return false;
+      }
       scanStatus(added + ' dari ' + total + ' aset wadah ' + hit.container.cabinetId + ' masuk keranjang.', added ? 'ok' : 'err');
-      buzz(added > 0); return added > 0;
+      flashScan(added ? 'ok' : 'warn', hit.container.cabinetId, added ? added + ' aset masuk · ' + carts[flow].length + ' di keranjang' : 'Semua isinya sudah di keranjang');
+      buzz(added ? 'ok' : 'warn'); return added > 0;
     }
-    if (pushCart(hit.item, flow, '')) { scanStatus('Masuk keranjang: ' + hit.item.id, 'ok'); buzz(true); return true; }
-    scanStatus('Sudah ada di keranjang: ' + hit.item.id, 'err'); buzz(false); return false;
+    return addedFeedback(pushCart(hit.item, flow, ''), hit.item, flow);
+  }
+  function addedFeedback(added, item, f) {
+    var n = carts[f].length;
+    if (added) {
+      scanStatus('Masuk keranjang: ' + item.id + ' · ' + n + ' di keranjang', 'ok');
+      flashScan('ok', item.id, (item.name || typeLabel(item.type)) + ' · ke-' + n + ' di keranjang');
+      buzz('ok'); return true;
+    }
+    scanStatus('Sudah ada di keranjang: ' + item.id, 'warn');
+    flashScan('warn', item.id, 'Sudah ada di keranjang');
+    buzz('warn'); return false;
   }
 
   /** Newest scan goes to the top of the cart so the operator sees it land. */
@@ -745,6 +788,13 @@
       if (tab) tab.classList.toggle('has', carts[f].length > 0);
     });
     var cart = carts[flow];
+    var sc = $('scanCount');
+    if (sc) {
+      if (sc.dataset.flow === flow && cart.length > Number(sc.dataset.n || 0)) { sc.classList.remove('bump'); void sc.offsetWidth; sc.classList.add('bump'); }
+      sc.dataset.flow = flow; sc.dataset.n = cart.length;
+      sc.hidden = !cart.length;
+      sc.textContent = cart.length + ' ' + FLOWS[flow].unit;
+    }
     $('cartTitle').textContent = FLOWS[flow].title + ' · ' + cart.length;
     var byType = {};
     cart.forEach(function (x) { byType[x.type] = (byType[x.type] || 0) + 1; });

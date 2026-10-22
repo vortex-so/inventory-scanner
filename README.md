@@ -48,8 +48,11 @@ The URL stays the same.
 ## Everyday use
 
 - **Scan.** Pick the flow at the top (Pengecekan Kondisi · Barang Keluar · Barang Masuk/Kembali ·
-  Kelompokkan), start the camera, point at labels. Each hit vibrates, beeps and lands at the top of the
-  cart with a short green flash. Typing an ID or a USB scanner's keystrokes into the field under the
+  Kelompokkan), start the camera, point at labels. Each read shows a card over the camera with the ID in
+  large type and its place in the cart ("ke-5 di keranjang"), the corners flash and a count in the corner
+  ticks up, so two similar IDs in a row are still clearly two scans. Green = added, amber = already in the
+  cart, red = not found or refused, each with its own sound (iPhones do not vibrate for websites). Holding
+  the camera on the same label stays silent; it lands at the top of the cart with a short green flash. Typing an ID or a USB scanner's keystrokes into the field under the
   camera does the same. Once the camera has been started it starts by itself the next time the Scan
   screen opens; Hentikan switches that off.
 - **Hold it about 20 cm away.** The camera runs at up to 1920 x 1080 and the centre square (the red corners)

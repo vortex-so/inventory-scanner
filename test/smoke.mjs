@@ -94,8 +94,12 @@ await evaluate(`document.querySelector('#dlg [data-r="0"]').click(); true`);
 await evaluate(`inventoryApp.setFlow('out'); inventoryApp.showPage('scan'); true`);
 check('scan page active', await evaluate(`document.getElementById('page-scan').classList.contains('active')`));
 check('scan unknown code is refused', (await evaluate(`inventoryApp.handleCode('NOPE-123')`)) === false);
+check('an unknown code shows a red card', await evaluate(`document.getElementById('scanFlash').className.includes('err') && document.getElementById('scanFlash').textContent.includes('NOPE-123')`));
 check('scan single module', (await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.030')`)) === true && (await evaluate(`inventoryApp.carts.out.length`)) === 1);
+check('a good scan shows a green card over the camera naming the ID and its place in the cart',
+  await evaluate(`(() => { const f = document.getElementById('scanFlash'); return f.classList.contains('show') && f.classList.contains('ok') && f.textContent.includes('1-MVG-12-25-NY-MD.030') && f.textContent.includes('ke-1') && document.getElementById('scanCount').textContent === '1 unit'; })()`));
 check('scan same code again is a duplicate', (await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.030')`)) === false);
+check('a repeat scan shows an amber card', await evaluate(`document.getElementById('scanFlash').className.includes('warn') && document.getElementById('scanFlash').textContent.includes('Sudah ada')`));
 await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`);
 check('scanning a box label adds its 16 members plus the box itself', (await evaluate(`inventoryApp.carts.out.length`)) === 18, 'cart=' + await evaluate(`inventoryApp.carts.out.length`));
 check('cart renders rows', (await evaluate(`document.querySelectorAll('#cartList .item').length`)) === 18);
