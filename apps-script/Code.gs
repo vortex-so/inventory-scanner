@@ -72,6 +72,7 @@ var DEFAULT_LISTS = [
   ['subkategori', 'Tripod & Monopod', 'TRP', 'Camera Support & Accessories'],
   ['subkategori', 'Switcher & Recorder', 'SWR', 'Multimedia & Lainnya'],
   ['subkategori', 'Audio', 'AUD', 'Multimedia & Lainnya'],
+  ['subkategori', 'Display', 'DSP', 'Multimedia & Lainnya'],
   ['lokasi', 'Storage', '', ''], ['lokasi', 'Drybox', '', ''],
   ['wadah', 'Pouch', 'POU', ''], ['wadah', 'Tas', 'TAS', ''], ['wadah', 'Koper', 'KOP', ''], ['wadah', 'Kontainer', 'KON', '']
 ];
@@ -296,11 +297,15 @@ function hCommit(ss, payload, user, batchId) {
     if (!f.to) throw new AppError('Lokasi tujuan / acara wajib diisi.');
     var onDuty = ids.filter(function (id) { return byId[id.toLowerCase()].location === ON_DUTY; });
     var passive = ids.filter(function (id) { return byId[id.toLowerCase()].status === 'Passive' && onDuty.indexOf(id) < 0; });
-    if (onDuty.length || passive.length) {
+    var broken = ids.filter(function (id) {
+      return byId[id.toLowerCase()].condition === 'Broken' && onDuty.indexOf(id) < 0 && passive.indexOf(id) < 0;
+    });
+    if (onDuty.length || passive.length || broken.length) {
       var why = [];
       if (onDuty.length) why.push(onDuty.length + ' barang sudah On Duty: ' + onDuty.join(', '));
       if (passive.length) why.push(passive.length + ' barang berstatus Passive dan tidak bisa dikeluarkan: ' + passive.join(', '));
-      throw new AppError(why.join('. ') + '.', onDuty.concat(passive));
+      if (broken.length) why.push(broken.length + ' barang Broken dan tidak bisa dikeluarkan sampai diperbaiki: ' + broken.join(', '));
+      throw new AppError(why.join('. ') + '.', onDuty.concat(passive, broken));
     }
   } else {
     var places = readLists(ss).places;

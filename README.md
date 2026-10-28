@@ -79,7 +79,7 @@ version. The URL stays the same.
 - **Storage.** A pouch, bag, case or container gets an ID (`POU-001`, `KOP-001`, ...) or the label already
   on it. Scanning that label puts its whole contents in the cart; in the Kelompokkan flow, scan the storage
   first and then the items going into it.
-- **Rules the server enforces.** Out only when not On Duty and not Passive, in only when On Duty and into a
+- **Rules the server enforces.** Out only when not On Duty, not Passive and not Broken, in only when On Duty and into a
   listed place, a check needs a result and a status, Broken and Need Maintenance need a note, unknown IDs
   are refused. A refused save names the offending IDs and the app removes them from the cart so you can
   save the rest.

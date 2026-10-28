@@ -187,6 +187,11 @@ test('check-out, check-in and condition check follow Bagas\'s forms', () => {
   const passive = fail('commit', { action: 'KELUAR', ids: [ids[2]], location: 'X' });
   assert.match(passive.error, /Passive/);
   assert.deepEqual(passive.invalid, [ids[2]]);
+  ok('commit', { action: 'INSPEKSI', ids: [ids[2]], condition: 'Broken', status: 'Active', note: 'konektor patah' });
+  const brokenOut = fail('commit', { action: 'KELUAR', ids: [ids[2]], location: 'X' });
+  assert.match(brokenOut.error, /Broken/);
+  assert.deepEqual(brokenOut.invalid, [ids[2]]);
+  ok('commit', { action: 'INSPEKSI', ids: [ids[2]], condition: 'Good', status: 'Passive' });
 
   assert.match(fail('commit', { action: 'MASUK', ids: ids.slice(0, 2) }).error, /tempat simpan/);
   assert.match(fail('commit', { action: 'MASUK', ids: ids.slice(0, 2), storeLocation: 'Gudang' }).error, /tempat simpan/);

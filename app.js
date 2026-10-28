@@ -1076,7 +1076,8 @@
     if (!x) return;
     var admin = state.me && state.me.role === 'admin';
     var passive = x.status === 'Passive';
-    var canOut = !x.out && !passive;
+    var broken = x.condition === 'Broken' && !passive;
+    var canOut = !x.out && !passive && !broken;
     var facts = [x.serial ? 'SN ' + x.serial : '', x.out && x.destination ? 'Di ' + x.destination : ''].filter(Boolean).join(' · ');
     var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(x.id) + '</h2><div>' + esc(x.name) + ' <span class="muted">· ' + esc(kindLine(x)) + '</span></div>' +
       '<div class="meta">' + pillCondition(x.condition) + pillPlace(x) + pillStatus(x) + (x.storageId ? '<span class="pill cab">' + esc(x.storageId) + '</span>' : '') + '</div>' +
@@ -1084,6 +1085,7 @@
       (x.conditionNote ? '<p class="small" style="margin:6px 0 0">' + esc(x.conditionNote) + '</p>' : '') +
       (x.note ? '<p class="small muted" style="margin:6px 0 0">' + esc(x.note) + '</p>' : '') +
       (passive ? '<p class="small muted" style="margin:6px 0 0">Passive: tidak bisa dikeluarkan. Ubah statusnya lewat Pengecekan Kondisi.</p>' : '') +
+      (broken ? '<p class="small muted" style="margin:6px 0 0">Broken: tidak bisa dikeluarkan sampai diperbaiki. Ubah kondisinya lewat Pengecekan Kondisi.</p>' : '') +
       (x.lastUser ? '<p class="small muted" style="margin:6px 0 0">Terakhir: ' + esc(x.updatedAt) + ' oleh ' + esc(x.lastUser) + '</p>' : '') + '</div></div>' +
       '<div class="sheet-grid">' +
       '<button class="btn ' + (canOut ? '' : 'secondary') + '" type="button" data-a="out"' + (canOut ? '' : ' disabled') + '>' + ICON.out + 'Barang Keluar</button>' +
