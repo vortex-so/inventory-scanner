@@ -1,7 +1,8 @@
 // Headless-Chrome smoke test of the front end against the dev server (real Code.gs on an in-memory sheet).
 //   node test/smoke.mjs            needs Google Chrome on this Mac; starts its own dev server on port 8791.
-// Checks: the page boots without console errors, logs in, renders stats, scanning a box label fills the
-// cart, a refused check-out drops the offending IDs, the retried save succeeds, labels render as SVG.
+// Checks, on media equipment as in Bagas's format: login, stats, filters, the add-equipment form and its codes,
+// scanning (a case label fills the cart), the three save sheets and their rules, the shared cart, storage,
+// labels, history, look-up, the camera loop, and no console errors.
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import fs from 'node:fs';
@@ -21,7 +22,7 @@ server.stdout.on('data', d => { const m = /admin \/ (\d+)/.exec(String(d)); if (
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-smoke-'));
 // A fake phone camera: a tall 720x960 picture with one seeded label in the middle, 15 % of the frame width
 // (about 15 cm away on a phone), so the camera loop itself is tested, not only typed IDs.
-const CAM_LABEL = '1-MVG-12-25-NY-MD.036';
+const CAM_LABEL = 'LN-EMT-SON-5552';
 const camFile = path.join(profile, 'camera.y4m');
 {
   const qrcode = createRequire(import.meta.url)(path.join(here, '..', 'vendor', 'qrcode.js'));
@@ -73,84 +74,120 @@ await evaluate(`document.getElementById('loginUser').value='admin'; document.get
 await sleep(800);
 check('app view shown after login', await evaluate(`!document.getElementById('appView').classList.contains('hidden')`));
 const stats = await evaluate(`[...document.querySelectorAll('#statCards .card')].map(c => c.querySelector('.label').textContent + '=' + c.querySelector('.num').textContent)`);
-check('stat cards render', stats.length === 7 && stats[0] === 'Total unit aktif=48', stats.join(', '));
+check('stat cards render Bagas\'s terms', stats.length === 9 && stats[0] === 'Total unit aktif=24' && stats.includes('On Duty=3') && stats.includes('Passive=1') && stats.includes('Broken=1'), stats.join(', '));
 check('recent saves render as grouped rows', (await evaluate(`document.querySelectorAll('#homeRecent details').length`)) >= 4);
 check('session persisted', (await evaluate(`JSON.parse(localStorage.getItem('inventory-scanner.session')).user`)) === 'admin');
 
-await evaluate(`inventoryApp.showPage('inventory'); document.querySelectorAll('#inventoryList .item').length`);
-check('inventory list renders', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 48);
+await evaluate(`inventoryApp.showPage('inventory'); true`);
+check('inventory list renders', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 24);
 await evaluate(`document.querySelector('#inventoryFilter [data-f="out"]').click(); true`);
-check('filter "Di luar" works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 8);
-await evaluate(`document.querySelector('#inventoryFilter [data-f=""]').click(); document.getElementById('inventorySearch').value='psu'; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); true`);
-check('search works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 6);
+check('filter "On Duty" works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 3);
+await evaluate(`document.querySelector('#inventoryFilter [data-f="passive"]').click(); true`);
+check('filter "Passive" works', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 1);
+await evaluate(`document.querySelector('#inventoryFilter [data-f=""]').click(); document.getElementById('inventorySearch').value='np-fz'; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); true`);
+check('search finds by type', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 8);
+await evaluate(`document.getElementById('inventorySearch').value='0001002'; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); true`);
+check('search finds by serial number', (await evaluate(`document.querySelectorAll('#inventoryList .item').length`)) === 1);
 
 await evaluate(`document.getElementById('inventorySearch').value=''; document.getElementById('inventorySearch').dispatchEvent(new Event('input')); document.querySelector('#inventoryList [data-open]').click(); true`);
 await sleep(150);
 check('tapping a row opens the action sheet', (await evaluate(`document.getElementById('dlg').open && document.querySelectorAll('#dlg .sheet-grid button').length`)) === 6);
 await evaluate(`document.querySelector('#dlg [data-a="close"]').click(); document.getElementById('importBtn').click(); true`);
 await sleep(150);
-check('Tambah Aset opens a form dialog', (await evaluate(`document.getElementById('dlg').open && !!document.querySelector('#dlg textarea[name=ids]')`)) === true);
+check('Tambah Aset asks for kategori, sub-kategori, merk, type, SN and quantity', await evaluate(`['category','subcategory','brand','model','serial','quantity','location','condition','status','note'].every(n => !!document.querySelector('#dlg [name=' + n + ']'))`));
+await evaluate(`(() => { const f = document.querySelector('#dlg form'); const set = (n, v) => { const e = f.querySelector('[name=' + n + ']'); e.value = v; e.dispatchEvent(new Event('change', { bubbles: true })); };
+  set('category', 'Kamera'); set('subcategory', 'SONY Camera'); set('brand', 'Sony'); set('serial', 'ZX-998877'); return true; })()`);
+check('the code is previewed from category, sub-category, brand and the last 4 of the SN', (await evaluate(`document.getElementById('codePreview').textContent`)) === 'Kode: KM-SON-SON-8877');
+check('a sub-category list follows its category', await evaluate(`[...document.querySelectorAll('#dlg [name=subcategory] option')].map(o => o.value).join() === ',CANON Camera,SONY Camera,NIKON Camera,Aerial,Camcorder,Action & Underwater'`));
 await evaluate(`document.querySelector('#dlg [data-r="0"]').click(); true`);
+
 await evaluate(`inventoryApp.setFlow('out'); inventoryApp.showPage('scan'); true`);
 check('scan page active', await evaluate(`document.getElementById('page-scan').classList.contains('active')`));
 check('scan unknown code is refused', (await evaluate(`inventoryApp.handleCode('NOPE-123')`)) === false);
 check('an unknown code shows a red card', await evaluate(`document.getElementById('scanFlash').className.includes('err') && document.getElementById('scanFlash').textContent.includes('NOPE-123')`));
-check('scan single module', (await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.030')`)) === true && (await evaluate(`inventoryApp.carts.out.length`)) === 1);
+check('scan single item', (await evaluate(`inventoryApp.handleCode('CS-TRP-MAN-001')`)) === true && (await evaluate(`inventoryApp.carts.out.length`)) === 1);
 check('a good scan shows a green card over the camera naming the ID and its place in the cart',
-  await evaluate(`(() => { const f = document.getElementById('scanFlash'); return f.classList.contains('show') && f.classList.contains('ok') && f.textContent.includes('1-MVG-12-25-NY-MD.030') && f.textContent.includes('ke-1') && document.getElementById('scanCount').textContent === '1 unit'; })()`));
-check('scan same code again is a duplicate', (await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.030')`)) === false);
+  await evaluate(`(() => { const f = document.getElementById('scanFlash'); return f.classList.contains('show') && f.classList.contains('ok') && f.textContent.includes('CS-TRP-MAN-001') && f.textContent.includes('ke-1') && document.getElementById('scanCount').textContent === '1 unit'; })()`));
+check('scan same code again is a duplicate', (await evaluate(`inventoryApp.handleCode('CS-TRP-MAN-001')`)) === false);
 check('a repeat scan shows an amber card', await evaluate(`document.getElementById('scanFlash').className.includes('warn') && document.getElementById('scanFlash').textContent.includes('Sudah ada')`));
-await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`);
-check('scanning a box label adds its 16 members plus the box itself', (await evaluate(`inventoryApp.carts.out.length`)) === 18, 'cart=' + await evaluate(`inventoryApp.carts.out.length`));
-check('cart renders rows', (await evaluate(`document.querySelectorAll('#cartList .item').length`)) === 18);
+await evaluate(`inventoryApp.handleCode('KOPER-01')`);
+check('scanning a case label adds its 9 items', (await evaluate(`inventoryApp.carts.out.length`)) === 10, 'cart=' + await evaluate(`inventoryApp.carts.out.length`));
+await evaluate(`inventoryApp.handleCode('CS-BAT-SON-008')`);
+await evaluate(`inventoryApp.handleCode('CS-CBL-UGR-001')`);
+check('cart renders rows', (await evaluate(`document.querySelectorAll('#cartList .item').length`)) === 12);
 
 await send('Page.reload'); await sleep(1200);
-check('cart survives a page reload', (await evaluate(`inventoryApp.carts.out.length`)) === 18 && (await evaluate(`document.getElementById('page-scan').classList.contains('active')`)));
-check('newest scan is at the top of the cart', (await evaluate(`inventoryApp.carts.out[0].id`)) === '2-MVG-12-25-NY-BX.001' && (await evaluate(`inventoryApp.carts.out[17].id`)) === '1-MVG-12-25-NY-MD.030');
+check('cart survives a page reload', (await evaluate(`inventoryApp.carts.out.length`)) === 12 && (await evaluate(`document.getElementById('page-scan').classList.contains('active')`)));
+check('newest scan is at the top of the cart', (await evaluate(`inventoryApp.carts.out[0].id`)) === 'CS-CBL-UGR-001' && (await evaluate(`inventoryApp.carts.out[11].id`)) === 'CS-TRP-MAN-001');
 await evaluate(`inventoryApp.saveFlow(); true`);
 await sleep(200);
-check('Simpan opens the save sheet', await evaluate(`document.getElementById('dlg').open === true && !!document.querySelector('#dlg [name=location]')`));
+check('Barang Keluar sheet: date and person filled in, destination asked', await evaluate(`document.getElementById('dlg').open && !!document.querySelector('#dlg [name=location]') && [...document.querySelectorAll('#dlg input[disabled]')].some(i => i.value === 'admin')`));
 await evaluate(`document.querySelector('#dlg form').requestSubmit(); true`);
 await sleep(200);
-check('save sheet refuses an empty location and stays open', await evaluate(`document.getElementById('dlg').open === true`));
-await evaluate(`document.querySelector('#dlg [name=location]').value='Ballroom Hotel ABC'; document.querySelector('#dlg [name=eventName]').value='Wisuda'; document.querySelector('#dlg form').requestSubmit(); true`);
+check('save sheet refuses an empty destination and stays open', await evaluate(`document.getElementById('dlg').open === true`));
+await evaluate(`document.querySelector('#dlg [name=location]').value='Wisuda UGM'; document.querySelector('#dlg form').requestSubmit(); true`);
 await sleep(600);
 const toast1 = await evaluate(`document.getElementById('toast').textContent`);
-check('refused check-out drops the 8 items already out', (await evaluate(`inventoryApp.carts.out.length`)) === 10, 'toast: ' + toast1.slice(0, 90));
+check('refused check-out drops the item already On Duty and the Passive one', (await evaluate(`inventoryApp.carts.out.length`)) === 10 && /On Duty/.test(toast1) && /Passive/.test(toast1), 'toast: ' + toast1.slice(0, 120));
 await evaluate(`inventoryApp.saveFlow(); true`);
 await sleep(200);
-check('save sheet remembers the location from the refused attempt', (await evaluate(`document.querySelector('#dlg [name=location]').value`)) === 'Ballroom Hotel ABC');
+check('save sheet remembers the destination from the refused attempt', (await evaluate(`document.querySelector('#dlg [name=location]').value`)) === 'Wisuda UGM');
 await evaluate(`document.querySelector('#dlg form').requestSubmit(); true`);
 await sleep(600);
 check('second save succeeds and clears the cart', (await evaluate(`inventoryApp.carts.out.length`)) === 0, 'toast: ' + await evaluate(`document.getElementById('toast').textContent`));
-check('stats updated: 18 out', (await evaluate(`inventoryApp.state().stats.out`)) === 18);
+check('stats updated: 13 On Duty', (await evaluate(`inventoryApp.state().stats.onDuty`)) === 13);
 check('save button disabled on an empty cart', await evaluate(`document.getElementById('saveBtn').disabled === true`));
+
+await evaluate(`inventoryApp.setFlow('in'); inventoryApp.handleCode('CS-CBL-UGR-001')`);
+await evaluate(`inventoryApp.saveFlow(); true`);
+await sleep(200);
+check('Barang Masuk sheet shows where it came from', await evaluate(`[...document.querySelectorAll('#dlg input[disabled]')].some(i => i.value === 'Wisuda UGM') && !!document.querySelector('#dlg select[name=storeLocation]')`));
+await evaluate(`document.querySelector('#dlg form').requestSubmit(); true`);
+await sleep(200);
+check('Barang Masuk needs a place to store it', await evaluate(`document.getElementById('dlg').open === true`));
+await evaluate(`document.querySelector('#dlg [name=storeLocation]').value='Drybox'; document.querySelector('#dlg form').requestSubmit(); true`);
+await sleep(600);
+check('check-in saved into the Drybox', (await evaluate(`inventoryApp.state().items.find(x => x.id === 'CS-CBL-UGR-001').location`)) === 'Drybox' && (await evaluate(`inventoryApp.state().stats.onDuty`)) === 12);
+
+await evaluate(`inventoryApp.setFlow('check'); inventoryApp.handleCode('LG-GDX-GOD-001')`);
+await evaluate(`inventoryApp.saveFlow(); true`);
+await sleep(200);
+await evaluate(`(() => { const c = document.querySelector('#dlg [name=condition]'); c.value = 'Broken'; c.dispatchEvent(new Event('change')); document.querySelector('#dlg form').requestSubmit(); return true; })()`);
+await sleep(200);
+check('a Broken result needs a note', await evaluate(`document.getElementById('dlg').open === true && document.getElementById('noteLabel').textContent.startsWith('Catatan *')`));
+await evaluate(`document.querySelector('#dlg [name=note]').value='kabel daya putus'; document.querySelector('#dlg form').requestSubmit(); true`);
+await sleep(600);
+check('condition check saved with its note', (await evaluate(`inventoryApp.state().items.find(x => x.id === 'LG-GDX-GOD-001').conditionNote`)) === 'kabel daya putus' && (await evaluate(`inventoryApp.state().stats.broken`)) === 2);
 
 // Shared cart: a second device on the same login, played here by direct calls to the dev server's API.
 const apiCall = async (action, payload = {}) => (await (await fetch(`http://localhost:${PORT}/api`, { method: 'POST', body: JSON.stringify({ user: 'admin', code: adminCode, action, payload }) })).json());
+await evaluate(`inventoryApp.setFlow('out'); true`);
 check('after the save the shared cart is empty on the server', (await apiCall('cart.get')).data.carts.out.length === 0);
-await apiCall('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: '1-MVG-12-25-NY-MD.032', cab: '' }] }] });
+await apiCall('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: 'ML-SWR-BLA-1234', cab: '' }] }] });
 let seen = false;
 for (let i = 0; i < 30 && !seen; i++) { await sleep(250); seen = (await evaluate(`inventoryApp.carts.out.length`)) === 1; }
 check('a scan from another device on the same login shows here within seconds', seen);
 await evaluate(`document.querySelector('#cartList [data-remove]').click(); true`);
 await sleep(800);
 check('removing it here removes it on the other device too', (await apiCall('cart.get')).data.carts.out.length === 0);
-await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.033')`);
+await evaluate(`inventoryApp.handleCode('CS-TRP-MAN-002')`);
 await sleep(800);
-check('a scan here reaches the shared cart', (await apiCall('cart.get')).data.carts.out.map(e => e.id).join() === '1-MVG-12-25-NY-MD.033');
-await apiCall('commit', { action: 'KELUAR', ids: ['1-MVG-12-25-NY-MD.033'], eventDate: '2026-10-21', location: 'Gudang B', fromCart: true });
+check('a scan here reaches the shared cart', (await apiCall('cart.get')).data.carts.out.map(e => e.id).join() === 'CS-TRP-MAN-002');
+await apiCall('commit', { action: 'KELUAR', ids: ['CS-TRP-MAN-002'], location: 'Gudang B', fromCart: true });
 let followed = false;
-for (let i = 0; i < 30 && !followed; i++) { await sleep(250); followed = (await evaluate(`inventoryApp.carts.out.length`)) === 0 && (await evaluate(`inventoryApp.state().stats.out`)) === 19; }
+for (let i = 0; i < 30 && !followed; i++) { await sleep(250); followed = (await evaluate(`inventoryApp.carts.out.length`)) === 0 && (await evaluate(`inventoryApp.state().stats.onDuty`)) === 13; }
 check('a save on the other device empties this cart and updates the stats here', followed);
 
 await evaluate(`inventoryApp.setFlow('group'); true`);
-check('scanning a box in group flow sets it as the target', (await evaluate(`inventoryApp.handleCode('2-MVG-12-25-NY-BX.001')`)) === true && (await evaluate(`document.getElementById('groupTarget').value`)) === '2-MVG-12-25-NY-BX.001');
-check('then scanning a module adds it', (await evaluate(`inventoryApp.handleCode('1-MVG-12-25-NY-MD.031')`)) === true && (await evaluate(`inventoryApp.carts.group.length`)) === 1);
+check('scanning a storage label in group flow sets it as the target', (await evaluate(`inventoryApp.handleCode('POU-001')`)) === true && (await evaluate(`document.getElementById('groupTarget').value`)) === 'POU-001');
+check('then scanning an item adds it', (await evaluate(`inventoryApp.handleCode('CS-TRP-MAN-001')`)) === true && (await evaluate(`inventoryApp.carts.group.length`)) === 1);
 
-await evaluate(`inventoryApp.showPage('labels'); document.getElementById('labelSearch').value='PSU'; document.getElementById('labelSearch').dispatchEvent(new Event('input')); document.getElementById('labelSelectAll').click(); window.print = () => { window.__printed = true; }; document.getElementById('labelPrint').click(); true`);
+await evaluate(`inventoryApp.showPage('containers'); true`);
+check('Manajemen Storage lists the storage units and offers the four types', (await evaluate(`document.querySelectorAll('#containerList .item').length`)) === 2 && (await evaluate(`[...document.querySelectorAll('#containerType option')].map(o => o.value).join()`)) === ',Pouch,Tas,Koper,Kontainer');
+
+await evaluate(`inventoryApp.showPage('labels'); document.getElementById('labelSearch').value='NP-FZ'; document.getElementById('labelSearch').dispatchEvent(new Event('input')); document.getElementById('labelSelectAll').click(); window.print = () => { window.__printed = true; }; document.getElementById('labelPrint').click(); true`);
 await sleep(400);
-check('labels render as SVG and print is called', (await evaluate(`document.querySelectorAll('#printArea .qrcard svg').length`)) === 6 && (await evaluate(`window.__printed === true`)));
+check('labels render as SVG and print is called', (await evaluate(`document.querySelectorAll('#printArea .qrcard svg').length`)) === 8 && (await evaluate(`window.__printed === true`)));
 
 await evaluate(`inventoryApp.showPage('history'); true`);
 check('history renders grouped saves', (await evaluate(`document.querySelectorAll('#historyTable details').length`)) >= 5);
@@ -159,17 +196,26 @@ check('a save expands to its rows', (await evaluate(`document.querySelectorAll('
 await evaluate(`window.__gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices); navigator.mediaDevices.getUserMedia = () => Promise.reject(new Error('no camera in this check')); inventoryApp.showPage('inventory'); document.getElementById('lookupScanBtn').click(); true`);
 await sleep(400);
 check('scan-to-look-up dialog opens with a typed fallback', await evaluate(`document.getElementById('dlg').open && !!document.getElementById('lookupInput')`));
-await evaluate(`document.getElementById('lookupInput').value='1-MVG-12-25-NY-MD.002'; document.getElementById('lookupGo').click(); true`);
+await evaluate(`document.getElementById('lookupInput').value='KM-SON-SON-1002'; document.getElementById('lookupGo').click(); true`);
 await sleep(300);
-check('typed look-up opens the item sheet', (await evaluate(`document.querySelector('#dlg h2') && document.querySelector('#dlg h2').textContent`)) === '1-MVG-12-25-NY-MD.002');
+check('typed look-up opens the item sheet', (await evaluate(`document.querySelector('#dlg h2') && document.querySelector('#dlg h2').textContent`)) === 'KM-SON-SON-1002');
 await evaluate(`document.querySelector('#dlg [data-a="close"]').click(); true`);
+
+// Adding equipment end to end: two lenses without serial numbers get running numbers and are ticked for labels.
+await evaluate(`document.getElementById('importBtn').click(); (() => { const f = document.querySelector('#dlg form'); const set = (n, v) => { const e = f.querySelector('[name=' + n + ']'); e.value = v; e.dispatchEvent(new Event('change', { bubbles: true })); };
+  set('category', 'Lensa'); set('subcategory', 'RF Mount'); set('brand', 'Canon'); set('model', 'RF 50mm f/1.8'); set('quantity', '2'); return true; })()`);
+check('quantity without SN previews a range of running numbers', (await evaluate(`document.getElementById('codePreview').textContent`)) === 'Kode: LN-RFM-CAN-001 s/d LN-RFM-CAN-002');
+await evaluate(`document.querySelector('#dlg form').requestSubmit(); true`);
+await sleep(700);
+check('Tambah Aset creates the codes and offers their labels', await evaluate(`document.getElementById('dlg').open && document.querySelector('#dlg').textContent.includes('LN-RFM-CAN-001, LN-RFM-CAN-002')`) && (await evaluate(`inventoryApp.state().items.length`)) === 26);
+await evaluate(`document.querySelector('#dlg [data-r="0"]').click(); true`);
 
 // A phone that still holds a cart saved by the previous app version (no shared cart yet) merges it in once.
 await evaluate(`(() => { const k = Object.keys(localStorage).find(k => k.startsWith('inventory-scanner.cart.')); const v = JSON.parse(localStorage.getItem(k));
-  localStorage.setItem(k, JSON.stringify({ carts: { check: [{ id: '1-MVG-12-25-NY-MD.035', cab: '' }], out: [], in: [], group: [] }, drafts: v.drafts, flow: 'check' })); return true; })()`);
+  localStorage.setItem(k, JSON.stringify({ carts: { check: [{ id: 'CS-BAT-SON-005', cab: '' }], out: [], in: [], group: [] }, drafts: v.drafts, flow: 'check' })); return true; })()`);
 await send('Page.reload'); await sleep(1800);
 const merged = (await apiCall('cart.get')).data;
-check('a cart from the previous app version is merged into the shared cart', merged.carts.check.some(e => e.id === '1-MVG-12-25-NY-MD.035') && merged.carts.group.some(e => e.id === '1-MVG-12-25-NY-MD.031'));
+check('a cart from the previous app version is merged into the shared cart', merged.carts.check.some(e => e.id === 'CS-BAT-SON-005') && merged.carts.group.some(e => e.id === 'CS-TRP-MAN-001'));
 
 // The camera loop end to end: start the camera on the Scan page, the fake camera's label lands in the cart.
 await evaluate(`if (window.__gum) navigator.mediaDevices.getUserMedia = window.__gum; inventoryApp.setFlow('in'); inventoryApp.showPage('scan'); document.getElementById('camStart').click(); true`);

@@ -15,20 +15,28 @@ const admin = gas.adminCode();
 gas.sheets.get('Users').getRange(3, 1, 1, 4).setValues([['Fajar', '1234', 'operator', 'TRUE']]);
 
 if (process.env.SEED !== '0') {
-  const ids = n => Array.from({ length: n }, (_, i) => `1-MVG-12-25-NY-MD.${String(i + 1).padStart(3, '0')}`);
+  // Media equipment as in Bagas's format: 24 units, two storage units, a few checks and one check-out.
   const call = (action, payload) => gas.handle({ user: 'admin', code: admin, action, payload });
-  call('item.import', { type: 'MODUL', name: 'Modul LED P2.9', category: 'LED Screen', ids: ids(40) });
-  call('item.import', { type: 'POWER SUPPLY', name: 'PSU 200W', category: 'LED Screen', ids: Array.from({ length: 6 }, (_, i) => `1-MVG-12-25-NY-PSU.00${i + 1}`) });
-  call('item.import', { type: 'BOX', name: 'Flight case', category: 'LED Screen', ids: ['2-MVG-12-25-NY-BX.001', '2-MVG-12-25-NY-BX.002'] });
-  call('container.save', { containerType: 'BOX', cabinetId: '2-MVG-12-25-NY-BX.001', name: 'Box 1', note: '4 x 4 modul', createNew: true });
-  call('container.save', { containerType: 'KABINET', name: 'Kabinet LED Utama', createNew: true });
-  call('container.assign', { cabinetId: '2-MVG-12-25-NY-BX.001', ids: ids(16) });
-  call('commit', { action: 'INSPEKSI', ids: ids(20), condition: 'BAIK' });
-  call('commit', { action: 'INSPEKSI', ids: ids(22).slice(20), condition: 'RUSAK', damageNote: 'pixel mati' });
-  call('commit', { action: 'KELUAR', ids: ids(8), eventDate: '2026-10-18', location: 'Ballroom Hotel ABC', eventName: 'Wisuda' });
+  const add = p => call('item.add', p).data.addedIds;
+  const bodies = ['SN0001001', 'SN0001002', 'SN0001003'].map(serial => add({ category: 'Kamera', subcategory: 'SONY Camera', brand: 'Sony', model: 'A7 III', serial })[0]);
+  const lenses = ['5551', '5552'].map(serial => add({ category: 'Lensa', subcategory: 'E Mount', brand: 'Sony', model: 'FE 24-70mm GM', serial })[0]);
+  const lights = add({ category: 'Lighting', subcategory: 'Godox', brand: 'Godox', model: 'SL60W', quantity: 2 });
+  const cables = add({ category: 'Camera Support & Accessories', subcategory: 'Cable / Kabel', brand: 'Ugreen', model: 'HDMI 2m', quantity: 6 });
+  const batteries = add({ category: 'Camera Support & Accessories', subcategory: 'Battery & Charger', brand: 'Sony', model: 'NP-FZ100', quantity: 8, location: 'Drybox' });
+  const tripods = add({ category: 'Camera Support & Accessories', subcategory: 'Tripod & Monopod', brand: 'Manfrotto', model: '190X', quantity: 2 });
+  add({ category: 'Multimedia & Lainnya', subcategory: 'Switcher & Recorder', brand: 'Blackmagic', model: 'ATEM Mini Pro', serial: 'A1234' });
+  call('storage.save', { storageType: 'Koper', storageId: 'KOPER-01', name: 'Koper kamera Sony', note: '3 body, 2 lensa, baterai', createNew: true });
+  call('storage.save', { storageType: 'Pouch', name: 'Pouch kabel HDMI', createNew: true });
+  call('storage.assign', { storageId: 'KOPER-01', ids: bodies.concat(lenses, batteries.slice(0, 4)) });
+  call('storage.assign', { storageId: 'POU-001', ids: cables });
+  call('commit', { action: 'INSPEKSI', ids: bodies.concat(lenses), condition: 'Good', status: 'Active' });
+  call('commit', { action: 'INSPEKSI', ids: [lights[1]], condition: 'Broken', status: 'Active', note: 'lampu tidak menyala' });
+  call('commit', { action: 'INSPEKSI', ids: [tripods[1]], condition: 'Need Maintenance', status: 'Active', note: 'kaki seret' });
+  call('commit', { action: 'INSPEKSI', ids: [batteries[7]], condition: 'Good', status: 'Passive' });
+  call('commit', { action: 'KELUAR', ids: cables.slice(0, 3), location: 'Wisuda UGM' });
 }
 
-// A stand-in for opening the Google Sheet: the four tabs the script writes to, refreshed every two seconds.
+// A stand-in for opening the Google Sheet: the tabs the script writes to, refreshed every two seconds.
 const SHEET_PAGE = `<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sheet (dev)</title>
 <style>body{margin:0;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;background:#f8f9fa;color:#202124}header{position:sticky;top:0;background:#fff;border-bottom:1px solid #dadce0;padding:10px 16px;display:flex;gap:16px;align-items:center}
 header b{font-size:15px}header span{color:#5f6368}nav button{border:0;background:none;padding:8px 12px;font:inherit;cursor:pointer;border-bottom:2px solid transparent}nav button.on{border-color:#188038;font-weight:600;color:#188038}

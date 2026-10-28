@@ -38,7 +38,9 @@ class Range {
 }
 
 class Sheet {
-  constructor(name) { this.name = name; this.data = []; }
+  constructor(name, sheets) { this.name = name; this.data = []; this.sheets = sheets; }
+  setName(n) { this.sheets.delete(this.name); this.name = n; this.sheets.set(n, this); return this; }
+  getName() { return this.name; }
   getLastRow() {
     let n = this.data.length;
     while (n > 0 && (this.data[n - 1] || []).every(v => v === '' || v === undefined || v === null)) n--;
@@ -58,7 +60,7 @@ export function createFakeGas({ now } = {}) {
   const clock = { now: now || (() => new Date()) };
   const ss = {
     getSheetByName: n => sheets.get(n) || null,
-    insertSheet: n => { const s = new Sheet(n); sheets.set(n, s); return s; }
+    insertSheet: n => { const s = new Sheet(n, sheets); sheets.set(n, s); return s; }
   };
   const pad = n => String(n).padStart(2, '0');
   const globals = {

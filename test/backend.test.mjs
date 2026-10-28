@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeGas } from './fake-gas.mjs';
 
-const MODS = ['1-MVG-12-25-NY-MD.001', '1-MVG-12-25-NY-MD.002', '1-MVG-12-25-NY-MD.003'];
-const BOX_LABEL = '2-MVG-12-25-NY-BX.001';
+// Bagas's media equipment (Format Inventaris Alat Media, 26 Okt 2026).
+const CAM = { category: 'Kamera', subcategory: 'SONY Camera', brand: 'Sony', model: 'A7 III' };
+const CABLE = { category: 'Camera Support & Accessories', subcategory: 'Cable / Kabel', brand: 'Ugreen', model: 'HDMI 2m' };
+const CASE_LABEL = 'KOPER-01';
 
 function boot() {
-  const gas = createFakeGas({ now: () => new Date(2026, 9, 21, 10, 0, 0) });
+  const gas = createFakeGas({ now: () => new Date(2026, 9, 28, 10, 0, 0) });
   gas.setup();
   const code = gas.adminCode();
   const call = (action, payload = {}, extra = {}) => gas.handle({ user: 'admin', code, action, payload, ...extra });
@@ -20,263 +22,254 @@ function boot() {
     assert.equal(r.ok, false, `${action} should have failed`);
     return r;
   };
-  return { gas, code, call, ok, fail };
+  // three identical cables without serial numbers: CS-CBL-UGR-001 .. 003
+  const cables = () => ok('item.add', { ...CABLE, quantity: 3 }).addedIds;
+  return { gas, code, call, ok, fail, cables };
 }
 
-test('setup creates the five tabs and an admin', () => {
+test('setup creates the six tabs, seeds the lists and an admin; safe to run again', () => {
   const { gas, code } = boot();
-  assert.deepEqual([...gas.sheets.keys()], ['Items', 'Containers', 'Transactions', 'Carts', 'Users']);
+  assert.deepEqual([...gas.sheets.keys()], ['Items', 'Storage', 'Transactions', 'Carts', 'Lists', 'Users']);
   assert.match(code, /^\d{6}$/);
   assert.equal(gas.sheets.get('Items').data[0][0], 'id');
+  const lists = gas.rows('Lists').length;
+  assert.ok(lists > 30, 'Bagas\'s categories are seeded');
   assert.equal(gas.setup(), 'ok', 'setup is idempotent');
   assert.equal(gas.rows('Users').length, 1);
+  assert.equal(gas.rows('Lists').length, lists, 'lists the team edited are never reseeded');
 });
 
-test('login: wrong code fails, lockout after ten failures, operator cannot import', () => {
+test('setup moves a sheet from the LED-screen version: empty tabs take the new columns, Containers becomes Storage', () => {
+  const gas = createFakeGas();
+  const ss = gas.ctx.SpreadsheetApp.getActiveSpreadsheet();
+  ss.insertSheet('Items').getRange(1, 1, 1, 4).setValues([['id', 'qr_value', 'type', 'name']]);
+  ss.insertSheet('Containers').getRange(1, 1, 1, 2).setValues([['cabinet_id', 'container_type']]);
+  gas.setup();
+  assert.ok(gas.sheets.has('Storage') && !gas.sheets.has('Containers'));
+  assert.equal(gas.sheets.get('Storage').data[0][0], 'storage_id');
+  assert.equal(gas.sheets.get('Items').data[0][2], 'category');
+  // a tab that holds data with other columns is never rewritten
+  const gas2 = createFakeGas();
+  gas2.ctx.SpreadsheetApp.getActiveSpreadsheet().insertSheet('Items').getRange(1, 1, 2, 2).setValues([['id', 'type'], ['X-1', 'MODUL']]);
+  assert.throws(() => gas2.setup(), /sudah berisi data/);
+});
+
+test('login: wrong code fails, lockout after ten failures, operator cannot add items', () => {
   const { gas, code } = boot();
   const bad = gas.handle({ user: 'admin', code: 'nope', action: 'bootstrap' });
   assert.equal(bad.ok, false);
   assert.match(bad.error, /salah/);
   for (let i = 0; i < 9; i++) gas.handle({ user: 'admin', code: 'nope', action: 'bootstrap' });
-  const locked = gas.handle({ user: 'admin', code, action: 'bootstrap' });
-  assert.match(locked.error, /Terlalu banyak/);
-  // a second, operator user
-  gas.sheets.get('Users').getRange(3, 1, 1, 4).setValues([['Fajar', '1234', 'operator', 'TRUE']]);
-  const op = gas.handle({ user: 'fajar', code: '1234', action: 'bootstrap' });
+  assert.match(gas.handle({ user: 'admin', code, action: 'bootstrap' }).error, /Terlalu banyak/);
+  gas.sheets.get('Users').getRange(3, 1, 1, 4).setValues([['Reza', '1234', 'operator', 'TRUE']]);
+  const op = gas.handle({ user: 'reza', code: '1234', action: 'bootstrap' });
   assert.equal(op.ok, true);
   assert.equal(op.data.me.role, 'operator');
-  const denied = gas.handle({ user: 'Fajar', code: '1234', action: 'item.import', payload: { type: 'MODUL', name: 'x', ids: ['A'] } });
-  assert.match(denied.error, /admin/);
-  const inactive = gas.sheets.get('Users').getRange(3, 4, 1, 1).setValues([['FALSE']]);
-  assert.equal(gas.handle({ user: 'Fajar', code: '1234', action: 'bootstrap' }).ok, false);
+  assert.match(gas.handle({ user: 'Reza', code: '1234', action: 'item.add', payload: { ...CAM, serial: '123' } }).error, /admin/);
+  gas.sheets.get('Users').getRange(3, 4, 1, 1).setValues([['FALSE']]);
+  assert.equal(gas.handle({ user: 'Reza', code: '1234', action: 'bootstrap' }).ok, false);
 });
 
-test('bootstrap on an empty sheet', () => {
+test('bootstrap on an empty sheet carries the lists, conditions and statuses', () => {
   const { ok } = boot();
   const d = ok('bootstrap');
   assert.equal(d.me.name, 'admin');
-  assert.equal(d.types.length, 24);
-  assert.deepEqual(d.stats, { total: 0, good: 0, damaged: 0, unchecked: 0, out: 0, inWarehouse: 0, boxes: 0 });
+  assert.deepEqual(d.lists.categories.map(c => c.value), ['Kamera', 'Lensa', 'Lighting', 'Camera Support & Accessories', 'Multimedia & Lainnya']);
+  assert.equal(d.lists.categories[0].code, 'KM');
+  assert.ok(d.lists.subcategories.some(s => s.value === 'E Mount' && s.parent === 'Lensa' && s.code === 'EMT'));
+  assert.deepEqual(d.lists.places, ['Storage', 'Drybox']);
+  assert.deepEqual(d.lists.storageTypes.map(t => t.value), ['Pouch', 'Tas', 'Koper', 'Kontainer']);
+  assert.deepEqual(d.conditions, ['Good', 'Need Maintenance', 'Broken', 'Untested']);
+  assert.deepEqual(d.statuses, ['Active', 'Passive']);
+  assert.equal(d.onDuty, 'On Duty');
+  assert.deepEqual(d.stats, { total: 0, good: 0, needMaintenance: 0, broken: 0, untested: 0, onDuty: 0, inStorage: 0, passive: 0, storages: 0 });
 });
 
-test('import keeps IDs as given, skips duplicates, logs one row per item', () => {
+test('item codes: category-subcategory-brand-last 4 of SN, or a running number per unit without SN', () => {
   const { gas, ok, fail } = boot();
-  const d = ok('item.import', { type: 'modul', name: 'Modul LED P2.9', category: 'LED', ids: MODS.join('\n') + '\n' + MODS[0] });
-  assert.equal(d.addedCount, 3);
-  assert.equal(d.skippedCount, 1);
-  assert.equal(d.items[0].id, MODS[0]);
-  assert.equal(d.items[0].type, 'MODUL');
-  assert.equal(d.items[0].locationStatus, 'DI GUDANG');
-  assert.equal(d.items[0].location, 'Gudang');
-  assert.equal(gas.rows('Transactions').length, 3);
-  assert.equal(d.stats.unchecked, 3);
-  fail('item.import', { type: 'MODUL', name: '', ids: ['Z'] });
-  const tooMany = fail('item.import', { type: 'MODUL', name: 'x', ids: Array.from({ length: 2001 }, (_, i) => 'X' + i) });
-  assert.match(tooMany.error, /2000/);
+  const a = ok('item.add', { ...CAM, serial: 'SN-0012304567', location: 'Drybox', note: 'body only' });
+  assert.deepEqual(a.addedIds, ['KM-SON-SON-4567']);
+  const it = a.items[0];
+  assert.deepEqual([it.name, it.location, it.condition, it.status, it.out, it.note], ['Sony A7 III', 'Drybox', 'Untested', 'Active', false, 'body only']);
+  assert.deepEqual(ok('item.add', { ...CAM, serial: 'XY9994567' }).addedIds, ['KM-SON-SON-4567-2'], 'same last four: a suffix keeps it unique');
+  assert.deepEqual(ok('item.add', { ...CABLE, quantity: 3 }).addedIds, ['CS-CBL-UGR-001', 'CS-CBL-UGR-002', 'CS-CBL-UGR-003']);
+  assert.deepEqual(ok('item.add', { ...CABLE }).addedIds, ['CS-CBL-UGR-004'], 'the running number continues');
+  assert.deepEqual(ok('item.add', { category: 'Lighting', subcategory: 'Godox', brand: 'LG', model: 'Panel' }).addedIds, ['LG-GDX-LGX-001'], 'a short brand is padded');
+  const lab = ok('item.add', { ...CAM, ids: 'OLD-1\nOLD-2\nOLD-1\nKM-SON-SON-4567' });
+  assert.deepEqual([lab.addedCount, lab.skippedCount], [2, 2], 'labels already printed: used as they are, duplicates skipped');
+  assert.equal(gas.rows('Transactions').length, 9, 'one IMPORT row per unit: 1 + 1 + 3 + 1 + 1 + 2');
+  assert.equal(gas.rows('Transactions')[0][2], 'IMPORT');
+  assert.match(fail('item.add', { ...CAM, subcategory: 'E Mount' }).error, /sub-kategori/);
+  assert.match(fail('item.add', { ...CAM, category: 'Drone' }).error, /kategori/);
+  assert.match(fail('item.add', { ...CAM, brand: '' }).error, /Merk/);
+  assert.match(fail('item.add', { ...CAM, model: '' }).error, /Type/);
+  assert.match(fail('item.add', { ...CABLE, quantity: 500 }).error, /Jumlah/);
+  assert.match(fail('item.add', { ...CAM, location: 'Gudang' }).error, /lokasi/);
 });
 
-test('check-out, double check-out refused with the offending IDs, check-in, inspection', () => {
-  const { gas, ok, fail } = boot();
-  ok('item.import', { type: 'MODUL', name: 'Modul', ids: MODS });
-  const out = ok('commit', { action: 'KELUAR', ids: MODS.slice(0, 2), eventDate: '2026-10-25', location: 'Ballroom Hotel ABC', eventName: 'Wisuda' }, { batchId: 'b1' });
-  assert.equal(out.stats.out, 2);
-  assert.equal(out.items.find(x => x.id === MODS[0]).location, 'Ballroom Hotel ABC');
-  assert.equal(out.transactions[0].action, 'KELUAR');
-  assert.equal(out.transactions[0].batch_id, 'b1');
-  assert.equal(out.transactions[0].user, 'admin');
-
-  const again = fail('commit', { action: 'KELUAR', ids: MODS, eventDate: '2026-10-26', location: 'X' }, { batchId: 'b2' });
-  assert.deepEqual(again.invalid, MODS.slice(0, 2));
+test('check-out, check-in and condition check follow Bagas\'s forms', () => {
+  const { gas, ok, fail, cables } = boot();
+  const ids = cables();
+  assert.match(fail('commit', { action: 'KELUAR', ids }).error, /Lokasi tujuan/);
+  const out = ok('commit', { action: 'KELUAR', ids: ids.slice(0, 2), location: 'Wisuda UGM' }, { batchId: 'b1' });
+  assert.equal(out.stats.onDuty, 2);
+  const x = out.items.find(i => i.id === ids[0]);
+  assert.deepEqual([x.location, x.destination, x.out], ['On Duty', 'Wisuda UGM', true]);
+  const t = out.transactions[0];
+  assert.deepEqual([t.action, t.event_date, t.from, t.to, t.user, t.batch_id], ['KELUAR', '2026-10-28', 'Storage', 'Wisuda UGM', 'admin', 'b1'], 'date and person come from the server');
+  assert.deepEqual(fail('commit', { action: 'KELUAR', ids, location: 'X' }).invalid, ids.slice(0, 2));
   assert.equal(gas.rows('Transactions').length, 5, 'a refused batch writes nothing');
 
-  fail('commit', { action: 'KELUAR', ids: [MODS[2]], location: 'X' });            // no date
-  fail('commit', { action: 'KELUAR', ids: [MODS[2]], eventDate: '2026-10-26' });  // no location
-  const wrongIn = fail('commit', { action: 'MASUK', ids: [MODS[2]], eventDate: '2026-10-26', location: 'X' });
-  assert.deepEqual(wrongIn.invalid, [MODS[2]]);
+  ok('commit', { action: 'INSPEKSI', ids: [ids[2]], condition: 'Good', status: 'Passive' });
+  const passive = fail('commit', { action: 'KELUAR', ids: [ids[2]], location: 'X' });
+  assert.match(passive.error, /Passive/);
+  assert.deepEqual(passive.invalid, [ids[2]]);
 
-  const back = ok('commit', { action: 'MASUK', ids: MODS.slice(0, 2), eventDate: '2026-10-27', location: 'Ballroom Hotel ABC', storeLocation: 'Gudang Kubik' }, { batchId: 'b3' });
-  assert.equal(back.stats.out, 0);
-  assert.equal(back.items.find(x => x.id === MODS[0]).location, 'Gudang Kubik');
+  assert.match(fail('commit', { action: 'MASUK', ids: ids.slice(0, 2) }).error, /tempat simpan/);
+  assert.match(fail('commit', { action: 'MASUK', ids: ids.slice(0, 2), storeLocation: 'Gudang' }).error, /tempat simpan/);
+  assert.deepEqual(fail('commit', { action: 'MASUK', ids: [ids[2]], storeLocation: 'Drybox' }).invalid, [ids[2]]);
+  const back = ok('commit', { action: 'MASUK', ids: ids.slice(0, 2), storeLocation: 'drybox' });
+  assert.equal(back.stats.onDuty, 0);
+  const y = back.items.find(i => i.id === ids[0]);
+  assert.deepEqual([y.location, y.destination], ['Drybox', '']);
+  assert.deepEqual([back.transactions[0].from, back.transactions[0].to], ['Wisuda UGM', 'Drybox'], 'origin comes from the check-out');
 
-  const noNote = fail('commit', { action: 'INSPEKSI', ids: [MODS[0]], condition: 'RUSAK' });
-  assert.match(noNote.error, /kerusakan/);
-  const rusak = ok('commit', { action: 'INSPEKSI', ids: [MODS[0]], condition: 'RUSAK', damageNote: 'pixel mati' });
-  assert.equal(rusak.stats.damaged, 1);
-  assert.equal(rusak.items.find(x => x.id === MODS[0]).damageNote, 'pixel mati');
-  const baik = ok('commit', { action: 'INSPEKSI', ids: MODS, condition: 'BAIK' });
-  assert.deepEqual([baik.stats.good, baik.stats.damaged, baik.stats.unchecked], [3, 0, 0]);
-  assert.equal(baik.items[0].damageNote, '');
-  assert.equal(baik.items[0].lastCheckedAt, '2026-10-21 10:00:00');
-  const missing = fail('commit', { action: 'INSPEKSI', ids: ['NOPE'], condition: 'BAIK' });
-  assert.deepEqual(missing.invalid, ['NOPE']);
+  assert.match(fail('commit', { action: 'INSPEKSI', ids, status: 'Active' }).error, /hasil pemeriksaan/);
+  assert.match(fail('commit', { action: 'INSPEKSI', ids, condition: 'Good' }).error, /status/);
+  assert.match(fail('commit', { action: 'INSPEKSI', ids: [ids[0]], condition: 'Broken', status: 'Active' }).error, /Catatan wajib/);
+  assert.match(fail('commit', { action: 'INSPEKSI', ids: [ids[0]], condition: 'Need Maintenance', status: 'Active' }).error, /Catatan wajib/);
+  const broken = ok('commit', { action: 'INSPEKSI', ids: [ids[0]], condition: 'broken', status: 'active', note: 'konektor patah' });
+  const z = broken.items.find(i => i.id === ids[0]);
+  assert.deepEqual([z.condition, z.conditionNote, z.status, z.lastCheckedAt], ['Broken', 'konektor patah', 'Active', '2026-10-28 10:00:00']);
+  assert.equal(broken.stats.broken, 1);
+  const good = ok('commit', { action: 'INSPEKSI', ids, condition: 'Good', status: 'Active' });
+  assert.deepEqual([good.stats.good, good.stats.broken, good.stats.passive], [3, 0, 0]);
+  assert.equal(good.items.find(i => i.id === ids[0]).conditionNote, '');
+  assert.deepEqual(fail('commit', { action: 'INSPEKSI', ids: ['NOPE'], condition: 'Good', status: 'Active' }).invalid, ['NOPE']);
 });
 
 test('a retried batch id is not written twice', () => {
-  const { gas, ok, call } = boot();
-  ok('item.import', { type: 'MODUL', name: 'Modul', ids: MODS });
-  ok('commit', { action: 'KELUAR', ids: MODS, eventDate: '2026-10-25', location: 'X' }, { batchId: 'same' });
+  const { gas, ok, call, cables } = boot();
+  const ids = cables();
+  ok('commit', { action: 'KELUAR', ids, location: 'X' }, { batchId: 'same' });
   const n = gas.rows('Transactions').length;
-  const r = call('commit', { action: 'KELUAR', ids: MODS, eventDate: '2026-10-25', location: 'X' }, { batchId: 'same' });
+  const r = call('commit', { action: 'KELUAR', ids, location: 'X' }, { batchId: 'same' });
   assert.equal(r.ok, true);
   assert.equal(r.repeated, true);
   assert.equal(gas.rows('Transactions').length, n);
 });
 
-test('containers: auto IDs, custom box label as ID, assign, lookup, unassign', () => {
-  const { ok, fail } = boot();
-  ok('item.import', { type: 'MODUL', name: 'Modul', ids: MODS });
-  ok('item.import', { type: 'BOX', name: 'Flight case', ids: [BOX_LABEL] });
-  assert.equal(ok('container.nextId', { containerType: 'BOX' }).cabinetId, 'BOX-001');
-  assert.equal(ok('container.nextId', { containerType: 'KABINET' }).cabinetId, 'KAB-001');
-  fail('container.nextId', { containerType: 'RAK' });
+test('storage: types from the list, auto IDs, a case label as ID, assign, lookup, unassign', () => {
+  const { ok, fail, cables } = boot();
+  const ids = cables();
+  assert.equal(ok('storage.nextId', { storageType: 'Pouch' }).storageId, 'POU-001');
+  assert.equal(ok('storage.nextId', { storageType: 'koper' }).storageId, 'KOP-001');
+  fail('storage.nextId', { storageType: 'Kabinet' });
+  assert.equal(ok('storage.save', { storageType: 'Pouch', name: 'Pouch kabel', createNew: true }).storageId, 'POU-001');
+  assert.equal(ok('storage.nextId', { storageType: 'Pouch' }).storageId, 'POU-002');
+  const custom = ok('storage.save', { storageType: 'Koper', storageId: CASE_LABEL, name: 'Koper kamera', note: 'Sony set', createNew: true });
+  assert.equal(custom.storages.find(s => s.storageId === CASE_LABEL).storageType, 'Koper');
+  fail('storage.save', { storageType: 'Koper', storageId: CASE_LABEL, name: 'dup', createNew: true });
+  fail('storage.save', { storageType: 'Koper', storageId: 'has space', name: 'x', createNew: true });
+  fail('storage.save', { storageType: 'Pouch', name: '', createNew: true });
+  assert.equal(ok('storage.save', { storageId: CASE_LABEL, name: 'Koper kamera A' }).storages.find(s => s.storageId === CASE_LABEL).name, 'Koper kamera A');
 
-  const auto = ok('container.save', { containerType: 'KABINET', name: 'Kabinet LED Utama', createNew: true });
-  assert.equal(auto.cabinetId, 'KAB-001');
-  assert.equal(ok('container.nextId', { containerType: 'KABINET' }).cabinetId, 'KAB-002');
-
-  const custom = ok('container.save', { containerType: 'BOX', cabinetId: BOX_LABEL, name: 'Box 1', note: '4 x 4 modul', createNew: true });
-  assert.equal(custom.cabinetId, BOX_LABEL);
-  fail('container.save', { containerType: 'BOX', cabinetId: BOX_LABEL, name: 'dup', createNew: true });
-  fail('container.save', { containerType: 'BOX', cabinetId: 'has space', name: 'x', createNew: true });
-
-  const edited = ok('container.save', { cabinetId: BOX_LABEL, name: 'Box 1 (depan)', category: 'P2.9' });
-  assert.equal(edited.containers.find(c => c.cabinetId === BOX_LABEL).name, 'Box 1 (depan)');
-  assert.equal(edited.containers.length, 2);
-
-  const assigned = ok('container.assign', { cabinetId: BOX_LABEL, ids: MODS.slice(0, 2) });
-  const box = assigned.containers.find(c => c.cabinetId === BOX_LABEL);
-  assert.equal(box.itemCount, 2);
-  assert.equal(assigned.items.find(x => x.id === MODS[0]).cabinetId, BOX_LABEL);
-  const moved = ok('container.assign', { cabinetId: 'KAB-001', ids: [MODS[0]] });
-  assert.equal(moved.containers.find(c => c.cabinetId === BOX_LABEL).itemCount, 1);
-  assert.equal(moved.containers.find(c => c.cabinetId === 'KAB-001').itemCount, 1);
+  const assigned = ok('storage.assign', { storageId: CASE_LABEL, ids: ids.slice(0, 2) });
+  assert.equal(assigned.storages.find(s => s.storageId === CASE_LABEL).itemCount, 2);
+  assert.equal(assigned.items.find(x => x.id === ids[0]).storageId, CASE_LABEL);
+  const moved = ok('storage.assign', { storageId: 'POU-001', ids: [ids[0]] });
+  assert.equal(moved.storages.find(s => s.storageId === CASE_LABEL).itemCount, 1);
   assert.match(moved.transactions[0].note, /Dipindah dari/);
-  fail('container.assign', { cabinetId: 'BOX-999', ids: [MODS[0]] });
-  const missing = fail('container.assign', { cabinetId: 'KAB-001', ids: ['NOPE'] });
-  assert.deepEqual(missing.invalid, ['NOPE']);
+  fail('storage.assign', { storageId: 'POU-999', ids: [ids[0]] });
+  assert.deepEqual(fail('storage.assign', { storageId: 'POU-001', ids: ['NOPE'] }).invalid, ['NOPE']);
 
-  const look = ok('lookup', { code: BOX_LABEL.toLowerCase() });
-  assert.equal(look.item.id, BOX_LABEL, 'the box label is also an item');
-  assert.equal(look.container.cabinetId, BOX_LABEL);
-  assert.deepEqual(look.members.map(m => m.id), [MODS[1]]);
-  const lookItem = ok('lookup', { code: MODS[2] });
-  assert.equal(lookItem.container, null);
+  const look = ok('lookup', { code: CASE_LABEL.toLowerCase() });
+  assert.equal(look.storage.storageId, CASE_LABEL);
+  assert.equal(look.item, null);
+  assert.deepEqual(look.members.map(m => m.id), [ids[1]]);
+  assert.equal(ok('lookup', { code: ids[2] }).storage, null);
   fail('lookup', { code: 'NOPE' });
 
-  const out = ok('commit', { action: 'KELUAR', ids: [MODS[1], BOX_LABEL], eventDate: '2026-10-25', location: 'X' });
-  assert.equal(out.containers.find(c => c.cabinetId === BOX_LABEL).outCount, 1);
-  const modRow = out.transactions.find(t => t.item_id === MODS[1]);
-  assert.equal(modRow.cabinet_id, BOX_LABEL, 'transaction rows carry the item\'s container');
-  assert.equal(out.transactions.find(t => t.item_id === BOX_LABEL).cabinet_id, '', 'the box itself has no container');
-
-  const un = ok('container.unassign', { ids: [MODS[1], MODS[2]] });
-  assert.equal(un.containers.find(c => c.cabinetId === BOX_LABEL).itemCount, 0);
+  const out = ok('commit', { action: 'KELUAR', ids: [ids[1]], location: 'X' });
+  assert.equal(out.storages.find(s => s.storageId === CASE_LABEL).outCount, 1);
+  assert.equal(out.transactions[0].storage_id, CASE_LABEL, 'transaction rows carry the item\'s storage');
+  const un = ok('storage.unassign', { ids: [ids[1], ids[2]] });
+  assert.equal(un.storages.find(s => s.storageId === CASE_LABEL).itemCount, 0);
   assert.equal(un.transactions[0].action, 'LEPAS');
-  assert.equal(un.transactions[0].cabinet_id, BOX_LABEL);
+  assert.equal(un.transactions[0].storage_id, CASE_LABEL);
 });
 
 test('edit, deactivate and per-item history', () => {
   const { ok, fail } = boot();
-  ok('item.import', { type: 'MODUL', name: 'Modul', ids: MODS });
-  ok('container.save', { containerType: 'KABINET', name: 'K', createNew: true });
-  ok('container.assign', { cabinetId: 'KAB-001', ids: [MODS[0]] });
-  const same = ok('item.update', { id: MODS[0], name: 'Modul' });
-  assert.equal(same.message, 'Tidak ada perubahan.');
-  const ed = ok('item.update', { id: MODS[0], name: 'Modul LED', category: 'LED', location: 'IONs', type: 'modul backup' });
-  const it = ed.items.find(x => x.id === MODS[0]);
-  assert.deepEqual([it.name, it.category, it.location, it.type], ['Modul LED', 'LED', 'IONs', 'MODUL BACKUP']);
+  const id = ok('item.add', { ...CAM, serial: '1234' }).addedIds[0];
+  ok('storage.save', { storageType: 'Tas', name: 'Tas kamera', createNew: true });
+  ok('storage.assign', { storageId: 'TAS-001', ids: [id] });
+  assert.equal(ok('item.update', { id, brand: 'Sony' }).message, 'Tidak ada perubahan.');
+  const ed = ok('item.update', { id, model: 'A7 IV', serial: '5678', status: 'Passive', location: 'Drybox', note: 'baru servis', subcategory: 'SONY Camera' });
+  const it = ed.items.find(x => x.id === id);
+  assert.deepEqual([it.name, it.serial, it.status, it.location, it.note, it.id], ['Sony A7 IV', '5678', 'Passive', 'Drybox', 'baru servis', id], 'the code never changes');
   assert.equal(ed.transactions[0].action, 'EDIT');
-  fail('item.update', { id: MODS[0], name: '' });
-  fail('item.update', { id: 'NOPE', name: 'x' });
-
-  const h = ok('history', { itemId: MODS[0] });
-  assert.deepEqual(h.transactions.map(t => t.action), ['EDIT', 'KELOMPOK', 'IMPORT']);
-
-  const de = ok('item.deactivate', { ids: [MODS[0], 'NOPE'] });
-  assert.equal(de.items.length, 2);
-  assert.equal(de.stats.total, 2);
-  assert.equal(de.containers[0].itemCount, 0);
+  fail('item.update', { id, brand: '' });
+  fail('item.update', { id, subcategory: 'E Mount' });
+  fail('item.update', { id, status: 'Rusak' });
+  fail('item.update', { id: 'NOPE', model: 'x' });
+  assert.deepEqual(ok('history', { itemId: id }).transactions.map(t => t.action), ['EDIT', 'KELOMPOK', 'IMPORT']);
+  const de = ok('item.deactivate', { ids: [id, 'NOPE'] });
+  assert.equal(de.items.length, 0);
+  assert.equal(de.storages[0].itemCount, 0);
   assert.match(de.message, /1 barang/);
-  fail('lookup', { code: MODS[0] });
-  const dupe = ok('item.import', { type: 'MODUL', name: 'Modul', ids: [MODS[0]] });
-  assert.equal(dupe.skippedCount, 1, 'an inactive ID is still taken');
+  fail('lookup', { code: id });
+  assert.deepEqual(ok('item.add', { ...CAM, serial: '991234' }).addedIds, ['KM-SON-SON-1234-2'], 'a removed code is never handed out again');
 });
 
 test('unknown action and malformed input never crash', () => {
   const { call } = boot();
-  assert.equal(call('nope').ok, false);
-  assert.equal(call('commit', null).ok, false);
-  assert.equal(call('commit', { action: 'KELUAR', ids: 'not,an,array' }).ok, false);
-  assert.equal(call('container.assign', { cabinetId: 'x', ids: 42 }).ok, false);
+  assert.match(call('nope').error, /tidak dikenal/);
+  assert.equal(call('commit', { action: 'TERBANG', ids: ['x'] }).ok, false);
+  assert.equal(call('commit', { action: 'KELUAR', ids: [] }).ok, false);
+  assert.equal(call('item.add', null).ok, false);
+  assert.equal(call('storage.save', { storageType: 42 }).ok, false);
+  assert.equal(call('cart.apply', { ops: [{ op: 'add', flow: 'nowhere', items: [{ id: 'A' }] }, null, { op: 'remove', flow: 'out', ids: 7 }] }).ok, true);
 });
 
 test('shared cart: two devices on one login, separate logins, save drops what was saved', () => {
-  const { gas, code, ok, fail } = boot();
-  ok('item.import', { type: 'MODUL', name: 'Modul', ids: MODS });
+  const { gas, code, ok, fail, cables } = boot();
+  const ids = cables();
   gas.sheets.get('Users').getRange(3, 1, 1, 4).setValues([['Reza', '5555', 'operator', 'TRUE']]);
   const reza = (action, payload = {}) => gas.handle({ user: 'reza', code: '5555', action, payload });
-
-  // bootstrap carries an empty cart; nothing is written until a device changes it
   const first = ok('bootstrap').cart;
   assert.equal(first.rev, 0);
   assert.deepEqual(first.carts, { check: [], out: [], in: [], group: [] });
 
-  // phone A and phone B (same login) add in the same moment: both scans are kept, newest first
-  ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[0], cab: '' }] }] });
-  const afterB = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[1], cab: '' }, { id: MODS[0], cab: 'BOX-001' }] }] });
-  assert.deepEqual(afterB.carts.out, [{ id: MODS[1], cab: '' }, { id: MODS[0], cab: 'BOX-001' }]);
+  ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: ids[0], cab: '' }] }] });
+  const afterB = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: ids[1], cab: '' }, { id: ids[0], cab: 'POU-001' }] }] });
+  assert.deepEqual(afterB.carts.out, [{ id: ids[1], cab: '' }, { id: ids[0], cab: 'POU-001' }], 'two phones in the same second: both scans kept');
   assert.ok(afterB.rev > first.rev, 'revision grows');
+  assert.deepEqual(ok('cart.get').carts.out.map(e => e.id), [ids[1], ids[0]]);
+  assert.match(ok('cart.get').dataRev, /^\d+\.\d+\.\d+$/);
+  assert.deepEqual(reza('cart.get').data.carts.out, [], 'another login has its own cart');
 
-  // the laptop (same login) sees the same cart
-  const laptop = ok('cart.get');
-  assert.deepEqual(laptop.carts.out.map(e => e.id), [MODS[1], MODS[0]]);
-  assert.match(laptop.dataRev, /^\d+\.\d+\.\d+$/);
-
-  // another login has its own, empty cart
-  const other = reza('cart.get');
-  assert.equal(other.ok, true);
-  assert.deepEqual(other.data.carts.out, []);
-
-  // group target, remove, clear
-  ok('cart.apply', { ops: [{ op: 'target', id: 'BOX-001' }, { op: 'add', flow: 'group', items: [{ id: MODS[2] }] }] });
-  let st = ok('cart.apply', { ops: [{ op: 'remove', flow: 'group', ids: [MODS[2]] }] });
-  assert.equal(st.target, 'BOX-001');
+  ok('cart.apply', { ops: [{ op: 'target', id: 'POU-001' }, { op: 'add', flow: 'group', items: [{ id: ids[2] }] }] });
+  const st = ok('cart.apply', { ops: [{ op: 'remove', flow: 'group', ids: [ids[2]] }] });
+  assert.equal(st.target, 'POU-001');
   assert.deepEqual(st.carts.group, []);
-  ok('cart.apply', { ops: [{ op: 'add', flow: 'check', items: [{ id: MODS[2] }] }, { op: 'clear', flow: 'check' }] });
 
-  // phone saves what it had: saved IDs leave the shared cart, for every device
-  const saved = ok('commit', { action: 'KELUAR', ids: [MODS[1], MODS[0]], eventDate: '2026-10-21', location: 'Hall', fromCart: true }, { batchId: 'b-1' });
+  const saved = ok('commit', { action: 'KELUAR', ids: [ids[1], ids[0]], location: 'Hall', fromCart: true }, { batchId: 'b-1' });
   assert.deepEqual(saved.cart.carts.out, []);
-  assert.deepEqual(ok('cart.get').carts.out, []);
-
-  // the laptop presses Simpan on the same, already-saved cart: nothing is written twice
   const before = gas.rows('Transactions').length;
-  const twice = fail('commit', { action: 'KELUAR', ids: [MODS[1], MODS[0]], eventDate: '2026-10-21', location: 'Hall', fromCart: true }, { batchId: 'b-2' });
+  const twice = fail('commit', { action: 'KELUAR', ids: [ids[1], ids[0]], location: 'Hall', fromCart: true }, { batchId: 'b-2' });
   assert.match(twice.error, /sudah disimpan/);
-  assert.deepEqual(twice.invalid.sort(), [MODS[0], MODS[1]].sort());
-  assert.equal(gas.rows('Transactions').length, before);
+  assert.equal(gas.rows('Transactions').length, before, 'a second Simpan writes nothing');
 
-  // a save without fromCart (old client) still works and ignores the shared cart
-  ok('cart.apply', { ops: [{ op: 'add', flow: 'in', items: [{ id: MODS[0] }] }] });
-  const plain = ok('commit', { action: 'MASUK', ids: [MODS[0], MODS[1]], eventDate: '2026-10-21', location: 'Hall' }, { batchId: 'b-3' });
-  assert.match(plain.message, /2 unit/);
-  assert.deepEqual(plain.cart.carts.in, []);
-
-  // only part of the cart left: the rest is saved and the skipped ones are named in the message
-  ok('cart.apply', { ops: [{ op: 'add', flow: 'check', items: [{ id: MODS[2] }] }] });
-  const part = ok('commit', { action: 'INSPEKSI', ids: [MODS[2], MODS[0]], condition: 'BAIK', fromCart: true }, { batchId: 'b-4' });
+  ok('cart.apply', { ops: [{ op: 'add', flow: 'check', items: [{ id: ids[2] }] }] });
+  const part = ok('commit', { action: 'INSPEKSI', ids: [ids[2], ids[0]], condition: 'Good', status: 'Active', fromCart: true }, { batchId: 'b-4' });
   assert.match(part.message, /1 unit\. 1 ID dilewati/);
 
-  // clearing the Carts tab by hand: the next change still gets a newer revision than any device has seen
   const seen = ok('cart.get').rev;
   gas.sheets.get('Carts').getRange(2, 1, 1, 4).setValues([['', '', '', '']]);
   for (const until = Date.now() + 30; Date.now() < until;) { /* real saves are seconds apart; here, a few ms */ }
-  const fresh = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: MODS[0] }] }] });
+  const fresh = ok('cart.apply', { ops: [{ op: 'add', flow: 'out', items: [{ id: ids[0] }] }] });
   assert.ok(fresh.rev > seen, `revision after a manual clear (${fresh.rev}) must exceed ${seen}`);
-
-  // the cart is one readable row per login in the Carts tab
-  const rows = gas.rows('Carts').filter(r => r[0]);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0][0], 'admin');
+  assert.equal(gas.rows('Carts').filter(r => r[0]).length, 1);
   assert.equal(code.length, 6);
 });

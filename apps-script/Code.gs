@@ -2,54 +2,83 @@
 /**
  * Inventory Scanner, Apps Script backend.
  *
- * One Google Sheet with five tabs: Items, Containers, Transactions, Users, Carts (open carts per login).
+ * One Google Sheet with six tabs: Items, Storage, Transactions, Users, Carts (open carts per login) and
+ * Lists (categories, sub-categories, storage places and storage types, which the team edits itself).
  * The sheet is the database, the admin panel and the backup (version history).
- * This script is its only gatekeeper: it checks the access code, enforces the
- * movement rules, serialises writes with a lock and appends the log.
+ * This script is its only gatekeeper: it checks the access code, enforces the movement rules, creates the
+ * item codes, serialises writes with a lock and appends the log.
  *
- * Deploy: Extensions > Apps Script, paste this file, run setup() once,
- * then Deploy > New deployment > Web app, "Execute as: Me", "Who has access: Anyone".
- * The front end POSTs JSON with a text/plain body (a "simple" request, so no CORS preflight):
+ * Deploy: Extensions > Apps Script, paste this file, run setup() once (again after an update that adds
+ * columns), then Deploy > New deployment > Web app, "Execute as: Me", "Who has access: Anyone".
+ * The front end POSTs JSON as text/plain (a "simple" request, so no CORS preflight):
  *   { user, code, action, payload, batchId }
  * and gets back { ok: true, data } or { ok: false, error, invalid? }.
  */
 
-var VERSION = '2026-10-22';
+var VERSION = '2026-10-28';
 var TZ = 'Asia/Jakarta';
 
-var TABS = { items: 'Items', containers: 'Containers', transactions: 'Transactions', users: 'Users', carts: 'Carts' };
+var TABS = { items: 'Items', storage: 'Storage', transactions: 'Transactions', users: 'Users', carts: 'Carts', lists: 'Lists' };
 
-var ITEM_COLS = ['id', 'qr_value', 'type', 'name', 'category', 'location', 'status', 'condition',
-  'damage_note', 'cabinet_id', 'active', 'created_at', 'updated_at', 'last_checked_at', 'last_user'];
-var CONTAINER_COLS = ['cabinet_id', 'container_type', 'name', 'category', 'note', 'active', 'created_at', 'updated_at'];
-var TXN_COLS = ['ts', 'batch_id', 'action', 'item_id', 'item_name', 'item_type', 'event_date', 'location',
-  'event_name', 'cabinet_id', 'condition', 'damage_note', 'note', 'user'];
+// One row per unit. location is a storage place (Storage, Drybox, ...) or On Duty while it is out; destination
+// is where its last check-out went; status is Active or Passive; active = FALSE means removed from the inventory.
+var ITEM_COLS = ['id', 'qr_value', 'category', 'subcategory', 'brand', 'model', 'serial', 'location', 'destination',
+  'status', 'condition', 'condition_note', 'note', 'storage_id', 'active', 'created_at', 'updated_at', 'last_checked_at', 'last_user'];
+var STORAGE_COLS = ['storage_id', 'storage_type', 'name', 'category', 'note', 'active', 'created_at', 'updated_at'];
+var TXN_COLS = ['ts', 'batch_id', 'action', 'item_id', 'item_name', 'category', 'event_date', 'from', 'to', 'storage_id',
+  'condition', 'status', 'note', 'user'];
 var USER_COLS = ['name', 'code', 'role', 'active'];
 // One row per login: the cart that login's phones and laptops share until Simpan. data is JSON.
 var CART_COLS = ['user', 'rev', 'data', 'updated_at'];
+// One row per choice. list is kategori, subkategori, lokasi or wadah; code is the short code used in item and
+// storage IDs; parent ties a sub-category to its category. Add or rename rows here; the app reads them at login.
+var LIST_COLS = ['list', 'value', 'code', 'parent'];
 
-var STATUS_IN = 'DI GUDANG';
-var STATUS_OUT = 'DI LUAR';
-var DEFAULT_LOCATION = 'Gudang';
+var ON_DUTY = 'On Duty';
+var CONDITIONS = ['Good', 'Need Maintenance', 'Broken', 'Untested'];
+var NEEDS_NOTE = { 'Need Maintenance': true, 'Broken': true };
+var STATUSES = ['Active', 'Passive'];
 var FLOW_ACTIONS = ['INSPEKSI', 'KELUAR', 'MASUK'];
-var CONTAINER_TYPES = ['KABINET', 'BOX'];
-var CONTAINER_PREFIX = { KABINET: 'KAB-', BOX: 'BOX-' };
 
-// The 24 item types of the original app, verbatim.
-var ITEM_TYPES = ['MODUL', 'BOX', 'POWER SUPPLY', 'MOBO', 'BRACKET', 'POWER PANEL LISTRIK 3 PHASE', 'PROSESSOR',
-  'LIGHTING', 'LIGHTING STAND', 'KABEL JUMPER MALE 120CM', 'KABEL JUMPER BESAR', 'KABEL LAN 120CM',
-  'KLEM BUTTERFLY HITAM', 'BAUT HEXAGONE', 'MODUL BACKUP', 'POWER SUPPLY BACKUP', 'MOBO BACKUP', 'REGGING',
-  'TOOLS', 'KABEL XLR', 'MIXER LAMPU', 'KABEL LAN PANJANG', 'TRIPOD', 'LIGHT STAND ACCESORIS'];
+// Bagas's "Format Inventaris Alat Media" (26 Okt 2026). Codes are proposals; the team corrects them in Lists.
+var DEFAULT_LISTS = [
+  ['kategori', 'Kamera', 'KM', ''], ['kategori', 'Lensa', 'LN', ''], ['kategori', 'Lighting', 'LG', ''],
+  ['kategori', 'Camera Support & Accessories', 'CS', ''], ['kategori', 'Multimedia & Lainnya', 'ML', ''],
+  ['subkategori', 'CANON Camera', 'CAN', 'Kamera'], ['subkategori', 'SONY Camera', 'SON', 'Kamera'],
+  ['subkategori', 'NIKON Camera', 'NIK', 'Kamera'], ['subkategori', 'Aerial', 'AER', 'Kamera'],
+  ['subkategori', 'Camcorder', 'CCD', 'Kamera'], ['subkategori', 'Action & Underwater', 'ACT', 'Kamera'],
+  ['subkategori', 'Z Mount', 'ZMT', 'Lensa'], ['subkategori', 'E Mount', 'EMT', 'Lensa'],
+  ['subkategori', 'RF Mount', 'RFM', 'Lensa'], ['subkategori', 'Other Mount', 'OTM', 'Lensa'],
+  ['subkategori', 'Godox', 'GDX', 'Lighting'], ['subkategori', 'Aputure', 'APT', 'Lighting'],
+  ['subkategori', 'Flash Light', 'FLS', 'Lighting'], ['subkategori', 'Lighting Support', 'LSP', 'Lighting'],
+  ['subkategori', 'Adapter & Converter', 'ADP', 'Camera Support & Accessories'],
+  ['subkategori', 'Battery & Charger', 'BAT', 'Camera Support & Accessories'],
+  ['subkategori', 'Cable / Kabel', 'CBL', 'Camera Support & Accessories'],
+  ['subkategori', 'Filter', 'FLT', 'Camera Support & Accessories'],
+  ['subkategori', 'GoPro Accessories', 'GPA', 'Camera Support & Accessories'],
+  ['subkategori', 'Grip & Textile', 'GRP', 'Camera Support & Accessories'],
+  ['subkategori', 'Laptop / Computer', 'LPT', 'Camera Support & Accessories'],
+  ['subkategori', 'Memory', 'MEM', 'Camera Support & Accessories'],
+  ['subkategori', 'Photo Support', 'PHS', 'Camera Support & Accessories'],
+  ['subkategori', 'Reflector', 'RFL', 'Camera Support & Accessories'],
+  ['subkategori', 'RIG & Camera Stabilizer', 'RIG', 'Camera Support & Accessories'],
+  ['subkategori', 'Slider', 'SLD', 'Camera Support & Accessories'],
+  ['subkategori', 'Tripod & Monopod', 'TRP', 'Camera Support & Accessories'],
+  ['subkategori', 'Switcher & Recorder', 'SWR', 'Multimedia & Lainnya'],
+  ['lokasi', 'Storage', '', ''], ['lokasi', 'Drybox', '', ''],
+  ['wadah', 'Pouch', 'POU', ''], ['wadah', 'Tas', 'TAS', ''], ['wadah', 'Koper', 'KOP', ''], ['wadah', 'Kontainer', 'KON', '']
+];
 
-var ADMIN_ONLY = { 'item.import': true, 'item.update': true, 'item.deactivate': true };
-var MUTATING = { 'commit': true, 'item.import': true, 'item.update': true, 'item.deactivate': true,
-  'container.save': true, 'container.assign': true, 'container.unassign': true, 'cart.apply': true };
+var ADMIN_ONLY = { 'item.add': true, 'item.update': true, 'item.deactivate': true };
+var MUTATING = { 'commit': true, 'item.add': true, 'item.update': true, 'item.deactivate': true,
+  'storage.save': true, 'storage.assign': true, 'storage.unassign': true, 'cart.apply': true };
 var CART_FLOWS = ['check', 'out', 'in', 'group'];
 var FLOW_OF_ACTION = { INSPEKSI: 'check', KELUAR: 'out', MASUK: 'in' };
 var MAX_CART = 3000;
 
 var RECENT_TXN = 300;
 var MAX_IDS = 2000;
+var MAX_QUANTITY = 200;
 var MAX_FAILED_LOGINS = 10;
 var LOCK_WAIT_MS = 30000;
 
@@ -69,13 +98,18 @@ function doPost(e) {
   return jsonOut(handleRequest(body));
 }
 
-/** Runs setup from the editor: creates the tabs and the first admin user. */
+/** Creates or updates the tabs. Safe to run again: tabs that hold data are never rewritten. */
 function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  // Before 28 Okt 2026 the storage tab was called Containers; an empty one is renamed and reused.
+  var old = ss.getSheetByName('Containers');
+  if (old && !ss.getSheetByName(TABS.storage) && old.getLastRow() <= 1) old.setName(TABS.storage);
   ensureTab(ss, TABS.items, ITEM_COLS);
-  ensureTab(ss, TABS.containers, CONTAINER_COLS);
+  ensureTab(ss, TABS.storage, STORAGE_COLS);
   ensureTab(ss, TABS.transactions, TXN_COLS);
   ensureTab(ss, TABS.carts, CART_COLS);
+  var lists = ensureTab(ss, TABS.lists, LIST_COLS);
+  if (lists.getLastRow() < 2) lists.getRange(2, 1, DEFAULT_LISTS.length, LIST_COLS.length).setValues(DEFAULT_LISTS);
   var users = ensureTab(ss, TABS.users, USER_COLS);
   if (users.getLastRow() < 2) {
     var code = String(Math.floor(100000 + Math.random() * 900000));
@@ -92,13 +126,13 @@ var HANDLERS = {
   'lookup': hLookup,
   'history': hHistory,
   'commit': hCommit,
-  'item.import': hItemImport,
+  'item.add': hItemAdd,
   'item.update': hItemUpdate,
   'item.deactivate': hItemDeactivate,
-  'container.nextId': hContainerNextId,
-  'container.save': hContainerSave,
-  'container.assign': hContainerAssign,
-  'container.unassign': hContainerUnassign,
+  'storage.nextId': hStorageNextId,
+  'storage.save': hStorageSave,
+  'storage.assign': hStorageAssign,
+  'storage.unassign': hStorageUnassign,
   'cart.get': hCartGet,
   'cart.apply': hCartApply
 };
@@ -164,23 +198,25 @@ function hBootstrap(ss, payload, user) {
   var snap = snapshot(ss);
   snap.me = user;
   snap.version = VERSION;
-  snap.types = ITEM_TYPES;
-  snap.containerTypes = CONTAINER_TYPES;
+  snap.lists = readLists(ss);
+  snap.conditions = CONDITIONS;
+  snap.statuses = STATUSES;
+  snap.onDuty = ON_DUTY;
   snap.cart = publicCart(ss, loadCart(ss, user).state);
   return snap;
 }
 
-/** Resolves a scanned code to an item, a container, or both (a box label can be both). */
+/** Resolves a scanned code to an item, a storage unit, or both (a box label can be both). */
 function hLookup(ss, payload) {
   var code = str(payload.code);
   if (!code) throw new AppError('Kode kosong.');
   var items = activeRows(readTable(ss, TABS.items, ITEM_COLS).rows);
-  var containers = activeRows(readTable(ss, TABS.containers, CONTAINER_COLS).rows);
+  var storages = activeRows(readTable(ss, TABS.storage, STORAGE_COLS).rows);
   var item = findItem(items, code);
-  var container = findContainer(containers, code);
-  if (!item && !container) throw new AppError('Kode tidak ditemukan pada inventaris aktif: ' + code);
-  var members = container ? items.filter(function (x) { return x.cabinet_id === container.cabinet_id; }) : [];
-  return { item: item ? publicItem(item) : null, container: container ? publicContainer(container, items) : null,
+  var storage = findStorage(storages, code);
+  if (!item && !storage) throw new AppError('Kode tidak ditemukan pada inventaris aktif: ' + code);
+  var members = storage ? items.filter(function (x) { return x.storage_id === storage.storage_id; }) : [];
+  return { item: item ? publicItem(item) : null, storage: storage ? publicStorage(storage, items) : null,
     members: members.map(publicItem) };
 }
 
@@ -195,6 +231,7 @@ function hHistory(ss, payload) {
   return { itemId: itemId, transactions: out };
 }
 
+/** Check-out, check-in or condition check of the IDs in a cart. Date and person in charge are filled here. */
 function hCommit(ss, payload, user, batchId) {
   var action = str(payload.action).toUpperCase();
   if (FLOW_ACTIONS.indexOf(action) < 0) throw new AppError('Tindakan tidak dikenal: ' + action);
@@ -221,40 +258,48 @@ function hCommit(ss, payload, user, batchId) {
   if (missing.length) throw new AppError('ID tidak ditemukan pada inventaris aktif: ' + missing.join(', '), missing);
 
   var now = nowStr();
-  var txnFields = { event_date: '', location: '', event_name: '', condition: '', damage_note: '', note: str(payload.note) };
-
+  var f = { event_date: now.slice(0, 10), from: '', to: '', condition: '', status: '', note: str(payload.note) };
+  var item;
   if (action === 'INSPEKSI') {
-    var condition = str(payload.condition).toUpperCase();
-    if (condition !== 'BAIK' && condition !== 'RUSAK') throw new AppError('Hasil pemeriksaan harus BAIK atau RUSAK.');
-    var damageNote = str(payload.damageNote);
-    if (condition === 'RUSAK' && !damageNote) throw new AppError('Keterangan kerusakan wajib diisi.');
-    txnFields.condition = condition;
-    txnFields.damage_note = condition === 'RUSAK' ? damageNote : '';
-    txnFields.event_date = str(payload.eventDate) || now.slice(0, 10);
-  } else {
-    txnFields.event_date = str(payload.eventDate);
-    txnFields.location = str(payload.location);
-    txnFields.event_name = str(payload.eventName);
-    if (!txnFields.event_date) throw new AppError('Tanggal wajib diisi.');
-    if (!txnFields.location) throw new AppError('Lokasi wajib diisi.');
-    var wrongStatus = action === 'KELUAR' ? STATUS_OUT : STATUS_IN;
-    var invalid = ids.filter(function (id) { return byId[id.toLowerCase()].status === wrongStatus; });
-    if (invalid.length) {
-      var why = action === 'KELUAR' ? 'sudah DI LUAR, tidak bisa dikeluarkan lagi' : 'masih DI GUDANG, tidak bisa diproses masuk';
-      throw new AppError(invalid.length + ' barang ' + why + ': ' + invalid.join(', '), invalid);
+    f.condition = pick(CONDITIONS, payload.condition);
+    if (!f.condition) throw new AppError('Pilih hasil pemeriksaan: ' + CONDITIONS.join(', ') + '.');
+    f.status = pick(STATUSES, payload.status);
+    if (!f.status) throw new AppError('Pilih status: Active atau Passive.');
+    if (NEEDS_NOTE[f.condition] && !f.note) throw new AppError('Catatan wajib diisi untuk kondisi ' + f.condition + ': apa yang perlu diperbaiki?');
+  } else if (action === 'KELUAR') {
+    f.to = str(payload.location);
+    if (!f.to) throw new AppError('Lokasi tujuan / acara wajib diisi.');
+    var onDuty = ids.filter(function (id) { return byId[id.toLowerCase()].location === ON_DUTY; });
+    var passive = ids.filter(function (id) { return byId[id.toLowerCase()].status === 'Passive' && onDuty.indexOf(id) < 0; });
+    if (onDuty.length || passive.length) {
+      var why = [];
+      if (onDuty.length) why.push(onDuty.length + ' barang sudah On Duty: ' + onDuty.join(', '));
+      if (passive.length) why.push(passive.length + ' barang berstatus Passive dan tidak bisa dikeluarkan: ' + passive.join(', '));
+      throw new AppError(why.join('. ') + '.', onDuty.concat(passive));
     }
+  } else {
+    var places = readLists(ss).places;
+    f.to = pick(places, payload.storeLocation);
+    if (!f.to) throw new AppError('Pilih tempat simpan: ' + places.join(', ') + '.');
+    var notOut = ids.filter(function (id) { return byId[id.toLowerCase()].location !== ON_DUTY; });
+    if (notOut.length) throw new AppError(notOut.length + ' barang tidak sedang On Duty, tidak bisa diproses masuk: ' + notOut.join(', '), notOut);
   }
 
-  var storeLocation = str(payload.storeLocation) || DEFAULT_LOCATION;
   var txns = [];
   ids.forEach(function (id) {
-    var item = byId[id.toLowerCase()];
-    if (action === 'KELUAR') { item.status = STATUS_OUT; item.location = txnFields.location; }
-    if (action === 'MASUK') { item.status = STATUS_IN; item.location = storeLocation; }
-    if (action === 'INSPEKSI') { item.condition = txnFields.condition; item.damage_note = txnFields.damage_note; item.last_checked_at = now; }
+    item = byId[id.toLowerCase()];
+    var t = { event_date: f.event_date, from: '', to: f.to, condition: f.condition, status: f.status, note: f.note };
+    if (action === 'KELUAR') { t.from = item.location; item.location = ON_DUTY; item.destination = f.to; }
+    if (action === 'MASUK') { t.from = item.destination || ON_DUTY; item.location = f.to; item.destination = ''; }
+    if (action === 'INSPEKSI') {
+      item.condition = f.condition;
+      item.status = f.status;
+      item.condition_note = NEEDS_NOTE[f.condition] ? f.note : '';
+      item.last_checked_at = now;
+    }
     item.updated_at = now;
     item.last_user = user.name;
-    txns.push(txnRow(now, batchId, action, item, txnFields, user));
+    txns.push(txnRow(now, batchId, action, item, t, user));
   });
   writeTable(table, ITEM_COLS);
   appendRows(ss, TABS.transactions, TXN_COLS, txns);
@@ -266,35 +311,62 @@ function hCommit(ss, payload, user, batchId) {
   return snap;
 }
 
-function hItemImport(ss, payload, user, batchId) {
-  var type = str(payload.type).toUpperCase();
-  var name = str(payload.name);
-  if (!type) throw new AppError('Jenis barang wajib diisi.');
-  if (!name) throw new AppError('Nama barang wajib diisi.');
-  var ids = splitIds(payload.ids); // duplicates inside the pasted list are reported as skipped, not silently merged
-  if (!ids.length) throw new AppError('Tempelkan minimal satu ID.');
-  if (ids.length > MAX_IDS) throw new AppError('Maksimal ' + MAX_IDS + ' ID per proses.');
+/**
+ * Adds equipment. Without ids the code is made here: category code - sub-category code - brand code -
+ * last 4 characters of the serial number, or a 3-digit running number when there is no serial (one per unit
+ * of quantity). With ids (labels already printed) those IDs are used as they are.
+ */
+function hItemAdd(ss, payload, user, batchId) {
+  var lists = readLists(ss);
+  var category = pickValue(lists.categories, payload.category);
+  if (!category) throw new AppError('Pilih kategori.');
+  var sub = pickValue(lists.subcategories.filter(function (s) { return !s.parent || s.parent === category.value; }), payload.subcategory);
+  if (!sub) throw new AppError('Pilih sub-kategori dari kategori ' + category.value + '.');
+  var brand = str(payload.brand), model = str(payload.model), serial = str(payload.serial);
+  if (!brand) throw new AppError('Merk wajib diisi.');
+  if (!model) throw new AppError('Type wajib diisi.');
+  var location = payload.location ? pick(lists.places.concat([ON_DUTY]), payload.location) : lists.places[0];
+  if (!location) throw new AppError('Pilih lokasi: ' + lists.places.concat([ON_DUTY]).join(', ') + '.');
+  var condition = payload.condition ? pick(CONDITIONS, payload.condition) : 'Untested';
+  if (!condition) throw new AppError('Kondisi tidak dikenal.');
+  var status = payload.status ? pick(STATUSES, payload.status) : 'Active';
+  if (!status) throw new AppError('Status harus Active atau Passive.');
 
   var table = readTable(ss, TABS.items, ITEM_COLS);
   var byId = indexItems(table.rows);
-  var now = nowStr();
-  var added = [], skipped = [], txns = [];
+  var given = splitIds(payload.ids), ids = [], skipped = [];
+  if (given.length) {
+    if (given.length > MAX_IDS) throw new AppError('Maksimal ' + MAX_IDS + ' ID per proses.');
+    var seen = {};
+    given.forEach(function (id) {
+      if (byId[id.toLowerCase()] || seen[id.toLowerCase()]) { skipped.push(id); return; }
+      if (!/^[A-Za-z0-9._\-\/]{1,60}$/.test(id)) throw new AppError('ID hanya boleh huruf, angka, titik, strip dan garis miring: ' + id);
+      seen[id.toLowerCase()] = true;
+      ids.push(id);
+    });
+  } else {
+    var quantity = serial ? 1 : Math.floor(Number(payload.quantity || 1));
+    if (!(quantity >= 1 && quantity <= MAX_QUANTITY)) throw new AppError('Jumlah 1 sampai ' + MAX_QUANTITY + '.');
+    ids = makeItemIds(table.rows, [category.code || shortCode(category.value, 2), sub.code || shortCode(sub.value, 3), shortCode(brand, 3)].join('-'), serial, quantity);
+  }
+
+  var now = nowStr(), txns = [];
   ids.forEach(function (id) {
-    if (byId[id.toLowerCase()]) { skipped.push(id); return; }
-    var item = { id: id, qr_value: id, type: type, name: name, category: str(payload.category),
-      location: str(payload.location) || DEFAULT_LOCATION, status: STATUS_IN, condition: '', damage_note: '',
-      cabinet_id: '', active: 'TRUE', created_at: now, updated_at: now, last_checked_at: '', last_user: user.name };
+    var item = { id: id, qr_value: id, category: category.value, subcategory: sub.value, brand: brand, model: model,
+      serial: serial, location: location, destination: '', status: status, condition: condition, condition_note: '',
+      note: str(payload.note), storage_id: '', active: 'TRUE', created_at: now, updated_at: now,
+      last_checked_at: '', last_user: user.name };
     byId[id.toLowerCase()] = item;
     table.rows.push(item);
-    added.push(id);
-    txns.push(txnRow(now, batchId, 'IMPORT', item, { note: 'Didaftarkan' }, user));
+    txns.push(txnRow(now, batchId, 'IMPORT', item, { to: location, condition: condition, status: status, note: 'Didaftarkan' }, user));
   });
-  if (added.length) {
+  if (ids.length) {
     writeTable(table, ITEM_COLS);
     appendRows(ss, TABS.transactions, TXN_COLS, txns);
   }
-  var snap = withMessage(snapshot(ss), added.length + ' ID ditambahkan' + (skipped.length ? ', ' + skipped.length + ' duplikat dilewati.' : '.'));
-  snap.addedCount = added.length;
+  var snap = withMessage(snapshot(ss), ids.length + ' aset ditambahkan' + (skipped.length ? ', ' + skipped.length + ' duplikat dilewati.' : '.'));
+  snap.addedIds = ids;
+  snap.addedCount = ids.length;
   snap.skippedCount = skipped.length;
   snap.skipped = skipped.slice(0, 100);
   return snap;
@@ -305,13 +377,33 @@ function hItemUpdate(ss, payload, user, batchId) {
   var table = readTable(ss, TABS.items, ITEM_COLS);
   var item = indexItems(table.rows)[id.toLowerCase()];
   if (!item || !isTrue(item.active)) throw new AppError('Barang tidak ditemukan: ' + id);
+  var lists = readLists(ss);
+  var next = {};
+  if (payload.category !== undefined) {
+    var c = pickValue(lists.categories, payload.category);
+    if (!c) throw new AppError('Pilih kategori.');
+    next.category = c.value;
+  }
+  if (payload.subcategory !== undefined) {
+    var cat = next.category || item.category;
+    var s = pickValue(lists.subcategories.filter(function (x) { return !x.parent || x.parent === cat; }), payload.subcategory);
+    if (!s) throw new AppError('Pilih sub-kategori dari kategori ' + cat + '.');
+    next.subcategory = s.value;
+  }
+  ['brand', 'model', 'serial', 'note'].forEach(function (k) { if (payload[k] !== undefined) next[k] = str(payload[k]); });
+  if (next.brand === '') throw new AppError('Merk wajib diisi.');
+  if (next.model === '') throw new AppError('Type wajib diisi.');
+  if (payload.status !== undefined) {
+    next.status = pick(STATUSES, payload.status);
+    if (!next.status) throw new AppError('Status harus Active atau Passive.');
+  }
+  if (payload.location !== undefined && item.location !== ON_DUTY) {
+    next.location = pick(lists.places, payload.location);
+    if (!next.location) throw new AppError('Pilih lokasi: ' + lists.places.join(', ') + '.');
+  }
   var changes = [];
-  ['name', 'category', 'location', 'type'].forEach(function (f) {
-    if (payload[f] === undefined || payload[f] === null) return;
-    var v = f === 'type' ? str(payload[f]).toUpperCase() : str(payload[f]);
-    if (f === 'name' && !v) throw new AppError('Nama barang wajib diisi.');
-    if (f === 'type' && !v) return;
-    if (v !== item[f]) { changes.push(f + ': ' + item[f] + ' -> ' + v); item[f] = v; }
+  Object.keys(next).forEach(function (k) {
+    if (next[k] !== item[k]) { changes.push(k + ': ' + (item[k] || '-') + ' -> ' + (next[k] || '-')); item[k] = next[k]; }
   });
   if (!changes.length) return withMessage(snapshot(ss), 'Tidak ada perubahan.');
   var now = nowStr();
@@ -332,7 +424,7 @@ function hItemDeactivate(ss, payload, user, batchId) {
     var item = byId[id.toLowerCase()];
     if (!item || !isTrue(item.active)) return;
     item.active = 'FALSE';
-    item.cabinet_id = '';
+    item.storage_id = '';
     item.updated_at = now;
     item.last_user = user.name;
     txns.push(txnRow(now, batchId, 'NONAKTIF', item, { note: str(payload.note) || 'Dinonaktifkan' }, user));
@@ -345,51 +437,56 @@ function hItemDeactivate(ss, payload, user, batchId) {
   return withMessage(snapshot(ss), count + ' barang dinonaktifkan. Riwayatnya tetap tersimpan.');
 }
 
-function hContainerNextId(ss, payload) {
-  var type = str(payload.containerType).toUpperCase();
-  if (CONTAINER_TYPES.indexOf(type) < 0) throw new AppError('Jenis wadah harus KABINET atau BOX.');
-  return { cabinetId: nextContainerId(readTable(ss, TABS.containers, CONTAINER_COLS).rows, type) };
+// ---------- storage: pouches, bags, cases, containers ----------
+
+function hStorageNextId(ss, payload) {
+  var type = pickValue(readLists(ss).storageTypes, payload.storageType);
+  if (!type) throw new AppError('Pilih jenis wadah.');
+  return { storageId: nextStorageId(readTable(ss, TABS.storage, STORAGE_COLS).rows, type) };
 }
 
-/** Creates a container (auto ID, or a custom ID such as the physical box label) or edits an existing one. */
-function hContainerSave(ss, payload, user, batchId) {
-  var table = readTable(ss, TABS.containers, CONTAINER_COLS);
+/** Creates a storage unit (auto ID, or a custom ID such as the label on a case) or edits an existing one. */
+function hStorageSave(ss, payload, user, batchId) {
+  var table = readTable(ss, TABS.storage, STORAGE_COLS);
   var name = str(payload.name);
-  if (!name) throw new AppError('Nama kabinet/box wajib diisi.');
+  if (!name) throw new AppError('Nama wadah wajib diisi.');
   var now = nowStr();
-  var requestedId = str(payload.cabinetId);
-  var existing = requestedId ? findContainer(table.rows, requestedId) : null;
-  var cabinetId;
+  var requestedId = str(payload.storageId);
+  var existing = requestedId ? findStorage(table.rows, requestedId) : null;
+  var storageId;
   if (existing && !payload.createNew) {
     existing.name = name;
     existing.category = str(payload.category);
     existing.note = str(payload.note);
+    if (payload.storageType) {
+      var t = pickValue(readLists(ss).storageTypes, payload.storageType);
+      if (t) existing.storage_type = t.value;
+    }
     existing.active = 'TRUE';
     existing.updated_at = now;
-    cabinetId = existing.cabinet_id;
+    storageId = existing.storage_id;
   } else {
     if (existing) throw new AppError('ID sudah dipakai: ' + requestedId);
-    var type = str(payload.containerType).toUpperCase();
-    if (CONTAINER_TYPES.indexOf(type) < 0) throw new AppError('Jenis wadah harus KABINET atau BOX.');
-    cabinetId = requestedId || nextContainerId(table.rows, type);
-    if (!/^[A-Za-z0-9._\-\/]{1,50}$/.test(cabinetId)) throw new AppError('ID wadah hanya boleh huruf, angka, titik, strip dan garis miring (maks. 50).');
-    table.rows.push({ cabinet_id: cabinetId, container_type: type, name: name, category: str(payload.category),
+    var type = pickValue(readLists(ss).storageTypes, payload.storageType);
+    if (!type) throw new AppError('Pilih jenis wadah.');
+    storageId = requestedId || nextStorageId(table.rows, type);
+    if (!/^[A-Za-z0-9._\-\/]{1,50}$/.test(storageId)) throw new AppError('ID wadah hanya boleh huruf, angka, titik, strip dan garis miring (maks. 50).');
+    table.rows.push({ storage_id: storageId, storage_type: type.value, name: name, category: str(payload.category),
       note: str(payload.note), active: 'TRUE', created_at: now, updated_at: now });
   }
-  writeTable(table, CONTAINER_COLS);
-  var snap = withMessage(snapshot(ss), (existing && !payload.createNew ? 'Wadah diperbarui: ' : 'Wadah dibuat: ') + cabinetId);
-  snap.cabinetId = cabinetId;
+  writeTable(table, STORAGE_COLS);
+  var snap = withMessage(snapshot(ss), (existing && !payload.createNew ? 'Wadah diperbarui: ' : 'Wadah dibuat: ') + storageId);
+  snap.storageId = storageId;
   return snap;
 }
 
-function hContainerAssign(ss, payload, user, batchId) {
-  var cabinetId = str(payload.cabinetId);
+function hStorageAssign(ss, payload, user, batchId) {
+  var storageId = str(payload.storageId);
   var ids = cleanIds(payload.ids);
-  if (!cabinetId) throw new AppError('Pilih kabinet/box tujuan.');
+  if (!storageId) throw new AppError('Pilih wadah tujuan.');
   if (!ids.length) throw new AppError('Pilih atau scan minimal satu aset.');
-  var containers = readTable(ss, TABS.containers, CONTAINER_COLS).rows;
-  var container = findContainer(activeRows(containers), cabinetId);
-  if (!container) throw new AppError('Kabinet/box tidak ditemukan: ' + cabinetId);
+  var storage = findStorage(activeRows(readTable(ss, TABS.storage, STORAGE_COLS).rows), storageId);
+  if (!storage) throw new AppError('Wadah tidak ditemukan: ' + storageId);
   var table = readTable(ss, TABS.items, ITEM_COLS);
   var byId = indexItems(table.rows);
   var missing = ids.filter(function (id) { return !byId[id.toLowerCase()] || !isTrue(byId[id.toLowerCase()].active); });
@@ -397,12 +494,12 @@ function hContainerAssign(ss, payload, user, batchId) {
   var now = nowStr(), txns = [], moved = 0;
   ids.forEach(function (id) {
     var item = byId[id.toLowerCase()];
-    if (item.cabinet_id === container.cabinet_id) return;
-    var from = item.cabinet_id;
-    item.cabinet_id = container.cabinet_id;
+    if (item.storage_id === storage.storage_id) return;
+    var from = item.storage_id;
+    item.storage_id = storage.storage_id;
     item.updated_at = now;
     item.last_user = user.name;
-    txns.push(txnRow(now, batchId, 'KELOMPOK', item, { note: from ? 'Dipindah dari ' + from : 'Masuk wadah' }, user));
+    txns.push(txnRow(now, batchId, 'KELOMPOK', item, { from: from, to: storage.storage_id, note: from ? 'Dipindah dari ' + from : 'Masuk wadah' }, user));
     moved++;
   });
   if (moved) {
@@ -410,12 +507,12 @@ function hContainerAssign(ss, payload, user, batchId) {
     appendRows(ss, TABS.transactions, TXN_COLS, txns);
   }
   var cartState = dropFromCart(ss, user, 'group', ids);
-  var snap = withMessage(snapshot(ss), moved + ' aset masuk ke ' + container.cabinet_id + '.');
+  var snap = withMessage(snapshot(ss), moved + ' aset masuk ke ' + storage.storage_id + '.');
   if (cartState) snap.cart = publicCart(ss, cartState);
   return snap;
 }
 
-function hContainerUnassign(ss, payload, user, batchId) {
+function hStorageUnassign(ss, payload, user, batchId) {
   var ids = cleanIds(payload.ids);
   if (!ids.length) throw new AppError('Pilih aset yang dilepas.');
   var table = readTable(ss, TABS.items, ITEM_COLS);
@@ -423,13 +520,13 @@ function hContainerUnassign(ss, payload, user, batchId) {
   var now = nowStr(), txns = [], count = 0;
   ids.forEach(function (id) {
     var item = byId[id.toLowerCase()];
-    if (!item || !isTrue(item.active) || !item.cabinet_id) return;
-    var from = item.cabinet_id;
-    item.cabinet_id = '';
+    if (!item || !isTrue(item.active) || !item.storage_id) return;
+    var from = item.storage_id;
+    item.storage_id = '';
     item.updated_at = now;
     item.last_user = user.name;
-    var row = txnRow(now, batchId, 'LEPAS', item, { note: 'Dilepas dari ' + from }, user);
-    row[TXN_COLS.indexOf('cabinet_id')] = from;
+    var row = txnRow(now, batchId, 'LEPAS', item, { from: from, note: 'Dilepas dari ' + from }, user);
+    row[TXN_COLS.indexOf('storage_id')] = from;
     txns.push(row);
     count++;
   });
@@ -538,27 +635,32 @@ function publicCart(ss, st) {
 
 /** Changes whenever a save adds rows anywhere, so an idle laptop knows to re-read the sheet. */
 function dataRev(ss) {
-  return [TABS.items, TABS.containers, TABS.transactions].map(function (n) {
+  return [TABS.items, TABS.storage, TABS.transactions].map(function (n) {
     var sh = ss.getSheetByName(n);
     return sh ? sh.getLastRow() : 0;
   }).join('.');
 }
 
-// ---------- snapshot and stats ----------
+// ---------- snapshot, lists and codes ----------
 
 function snapshot(ss) {
   var items = activeRows(readTable(ss, TABS.items, ITEM_COLS).rows);
-  var containers = activeRows(readTable(ss, TABS.containers, CONTAINER_COLS).rows);
+  var storages = activeRows(readTable(ss, TABS.storage, STORAGE_COLS).rows);
   var txns = readTable(ss, TABS.transactions, TXN_COLS).rows;
   var recent = txns.slice(Math.max(0, txns.length - RECENT_TXN)).reverse();
-  var stats = { total: items.length, good: 0, damaged: 0, unchecked: 0, out: 0, inWarehouse: 0, boxes: containers.length };
+  var stats = { total: items.length, good: 0, needMaintenance: 0, broken: 0, untested: 0, onDuty: 0, inStorage: 0,
+    passive: 0, storages: storages.length };
   items.forEach(function (x) {
-    if (x.condition === 'BAIK') stats.good++; else if (x.condition === 'RUSAK') stats.damaged++; else stats.unchecked++;
-    if (x.status === STATUS_OUT) stats.out++; else stats.inWarehouse++;
+    if (x.condition === 'Good') stats.good++;
+    else if (x.condition === 'Need Maintenance') stats.needMaintenance++;
+    else if (x.condition === 'Broken') stats.broken++;
+    else stats.untested++;
+    if (x.location === ON_DUTY) stats.onDuty++; else stats.inStorage++;
+    if (x.status === 'Passive') stats.passive++;
   });
   return {
     items: items.map(publicItem),
-    containers: containers.map(function (c) { return publicContainer(c, items); }),
+    storages: storages.map(function (c) { return publicStorage(c, items); }),
     stats: stats,
     transactions: recent,
     dataRev: dataRev(ss),
@@ -567,24 +669,100 @@ function snapshot(ss) {
 }
 
 function publicItem(x) {
-  return { id: x.id, qrValue: x.qr_value, type: x.type, name: x.name, category: x.category, location: x.location,
-    locationStatus: x.status || STATUS_IN, condition: x.condition, damageNote: x.damage_note, cabinetId: x.cabinet_id,
+  return { id: x.id, qrValue: x.qr_value, category: x.category, subcategory: x.subcategory, brand: x.brand,
+    model: x.model, serial: x.serial, name: (x.brand + ' ' + x.model).trim(), location: x.location,
+    destination: x.destination, out: x.location === ON_DUTY, status: x.status || 'Active',
+    condition: x.condition || 'Untested', conditionNote: x.condition_note, note: x.note, storageId: x.storage_id,
     updatedAt: x.updated_at, lastCheckedAt: x.last_checked_at, lastUser: x.last_user };
 }
 
-function publicContainer(c, items) {
-  var itemCount = 0, damagedCount = 0, outCount = 0;
+function publicStorage(c, items) {
+  var itemCount = 0, brokenCount = 0, outCount = 0;
   items.forEach(function (x) {
-    if (x.cabinet_id !== c.cabinet_id) return;
+    if (x.storage_id !== c.storage_id) return;
     itemCount++;
-    if (x.condition === 'RUSAK') damagedCount++;
-    if (x.status === STATUS_OUT) outCount++;
+    if (x.condition === 'Broken' || x.condition === 'Need Maintenance') brokenCount++;
+    if (x.location === ON_DUTY) outCount++;
   });
-  return { cabinetId: c.cabinet_id, containerType: c.container_type, name: c.name, category: c.category, note: c.note,
-    itemCount: itemCount, damagedCount: damagedCount, outCount: outCount };
+  return { storageId: c.storage_id, storageType: c.storage_type, name: c.name, category: c.category, note: c.note,
+    itemCount: itemCount, brokenCount: brokenCount, outCount: outCount };
 }
 
 function withMessage(snap, message) { snap.message = message; return snap; }
+
+/** The Lists tab as the app needs it. A sheet without the tab yet gets the defaults. */
+function readLists(ss) {
+  var rows = ss.getSheetByName(TABS.lists) ? readTable(ss, TABS.lists, LIST_COLS).rows : DEFAULT_LISTS.map(function (r) {
+    return { list: r[0], value: r[1], code: r[2], parent: r[3] };
+  });
+  var out = { categories: [], subcategories: [], places: [], storageTypes: [] };
+  rows.forEach(function (r) {
+    var list = str(r.list).toLowerCase(), value = str(r.value), code = str(r.code).toUpperCase();
+    if (!value) return;
+    if (list === 'kategori') out.categories.push({ value: value, code: code });
+    else if (list === 'subkategori') out.subcategories.push({ value: value, code: code, parent: str(r.parent) });
+    else if (list === 'lokasi' && value !== ON_DUTY) out.places.push(value);
+    else if (list === 'wadah') out.storageTypes.push({ value: value, code: code });
+  });
+  if (!out.places.length) out.places = ['Storage'];
+  return out;
+}
+
+/** Letters and digits of a name, upper case, cut or padded with X to n characters: "Sony" -> "SON". */
+function shortCode(text, n) {
+  var s = str(text).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  while (s.length < n) s += 'X';
+  return s.slice(0, n);
+}
+
+/** prefix-SN4 for a serial (a -2, -3 ... suffix if that code exists), else prefix-001, -002 ... after the highest. */
+function makeItemIds(rows, prefix, serial, quantity) {
+  var taken = {};
+  rows.forEach(function (r) { if (r.id) taken[r.id.toUpperCase()] = true; });
+  if (serial) {
+    var tail = str(serial).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    tail = tail.slice(-4) || '0000';
+    var base = prefix + '-' + tail, id = base, n = 2;
+    while (taken[id]) id = base + '-' + n++;
+    return [id];
+  }
+  var max = 0, re = new RegExp('^' + prefix.replace(/[-]/g, '\\-') + '-(\\d{3,})$');
+  Object.keys(taken).forEach(function (id) { var m = re.exec(id); if (m) max = Math.max(max, Number(m[1])); });
+  var ids = [];
+  for (var i = 1; i <= quantity; i++) {
+    var num = String(max + i);
+    while (num.length < 3) num = '0' + num;
+    ids.push(prefix + '-' + num);
+  }
+  return ids;
+}
+
+function nextStorageId(rows, type) {
+  var prefix = (type.code || shortCode(type.value, 3)) + '-';
+  var max = 0;
+  rows.forEach(function (r) {
+    if (r.storage_id.toUpperCase().indexOf(prefix) !== 0) return;
+    var m = /^(\d+)$/.exec(r.storage_id.slice(prefix.length));
+    if (m) max = Math.max(max, Number(m[1]));
+  });
+  var n = String(max + 1);
+  while (n.length < 3) n = '0' + n;
+  return prefix + n;
+}
+
+/** Case-insensitive match against a list of strings; returns the list's own spelling. */
+function pick(list, v) {
+  var k = str(v).toLowerCase();
+  if (!k) return '';
+  for (var i = 0; i < list.length; i++) if (list[i].toLowerCase() === k) return list[i];
+  return '';
+}
+function pickValue(list, v) {
+  var k = str(v).toLowerCase();
+  if (!k) return null;
+  for (var i = 0; i < list.length; i++) if (list[i].value.toLowerCase() === k) return list[i];
+  return null;
+}
 
 // ---------- sheet access ----------
 
@@ -595,9 +773,11 @@ function ensureTab(ss, name, cols) {
   var current = header.getValues()[0].map(str);
   var same = current.length === cols.length && current.every(function (v, i) { return v === cols[i]; });
   if (!same) {
-    if (sheet.getLastRow() > 0 && current.join('') !== '') {
-      throw new Error('Tab "' + name + '" sudah ada dengan kolom berbeda. Ganti nama tab lama dulu.');
+    // A tab with only a header (or nothing) takes the new columns; one with data rows is never rewritten.
+    if (sheet.getLastRow() > 1) {
+      throw new Error('Tab "' + name + '" sudah berisi data dengan kolom lain. Ganti nama tab lama dulu, lalu jalankan setup() lagi.');
     }
+    if (current.length > cols.length || sheet.getLastColumn() > cols.length) sheet.getRange(1, 1, 1, Math.max(sheet.getLastColumn(), cols.length)).clearContent();
     header.setValues([cols]);
   }
   header.setFontWeight('bold');
@@ -649,8 +829,8 @@ function appendRows(ss, name, cols, rows) {
 
 function txnRow(ts, batchId, action, item, f, user) {
   f = f || {};
-  return [ts, batchId || '', action, item.id, item.name, item.type, str(f.event_date), str(f.location), str(f.event_name),
-    item.cabinet_id || '', str(f.condition), str(f.damage_note), str(f.note), user.name];
+  return [ts, batchId || '', action, item.id, (item.brand + ' ' + item.model).trim(), item.category, str(f.event_date),
+    str(f.from), str(f.to), item.storage_id || '', str(f.condition), str(f.status), str(f.note), user.name];
 }
 
 function withLock(fn) {
@@ -692,9 +872,9 @@ function findItem(items, code) {
   return null;
 }
 
-function findContainer(containers, code) {
+function findStorage(storages, code) {
   var k = code.toLowerCase();
-  for (var i = 0; i < containers.length; i++) if (containers[i].cabinet_id.toLowerCase() === k) return containers[i];
+  for (var i = 0; i < storages.length; i++) if (storages[i].storage_id.toLowerCase() === k) return storages[i];
   return null;
 }
 
@@ -712,19 +892,6 @@ function cleanIds(list) {
     out.push(id);
   });
   return out;
-}
-
-function nextContainerId(rows, type) {
-  var prefix = CONTAINER_PREFIX[type];
-  var max = 0;
-  rows.forEach(function (r) {
-    if (r.container_type !== type) return;
-    var m = new RegExp('^' + prefix + '(\\d+)$', 'i').exec(r.cabinet_id);
-    if (m) max = Math.max(max, Number(m[1]));
-  });
-  var n = String(max + 1);
-  while (n.length < 3) n = '0' + n;
-  return prefix + n;
 }
 
 function jsonOut(obj) {

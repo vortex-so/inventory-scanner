@@ -61,6 +61,7 @@ svg.i { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-widt
 .card.hot .num { color: var(--amber); }
 .card.bad .num { color: var(--red); }
 .card.ok .num { color: var(--green); }
+.card.warn .num { color: var(--gold); }
 @media (min-width: 640px) { .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 
 /* forms */
@@ -109,6 +110,11 @@ table td strong, table th { white-space: nowrap; }
 .pill.cab { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); } .pill.cab::before { display: none; }
 .pill.gold { background: var(--gold-bg); color: var(--gold); border-color: var(--gold-line); text-transform: uppercase; letter-spacing: .05em; font-size: 10.5px; } .pill.gold::before { display: none; }
 .pill.plain::before { display: none; }
+.pill.warn { background: var(--gold-bg); color: var(--gold); border-color: var(--gold-line); } .pill.warn::before { background: var(--gold); }
+input:disabled { color: var(--muted); background: var(--surface-2); border-style: dashed; cursor: default; }
+.codeprev { margin: 4px 0 12px; padding: 9px 12px; border-radius: 9px; background: var(--surface-2); border: 1px solid var(--line); font-size: 13px; color: var(--fg-2); overflow-wrap: anywhere; }
+label.checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-2); margin: 12px 0 6px; cursor: pointer; }
+label.checkline input { width: 18px; height: 18px; margin: 0; }
 
 .notice { padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); color: var(--fg-2); border-radius: var(--r); margin: 0 0 12px; font-size: 13px; }
 .notice.error { background: var(--red-bg); border-color: var(--red-line); color: #ff8a8a; }

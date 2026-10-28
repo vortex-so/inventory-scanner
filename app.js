@@ -33,21 +33,16 @@
     in: { action: 'MASUK', title: 'Keranjang Barang Masuk/Kembali', unit: 'unit' },
     group: { action: null, title: 'Keranjang Pengelompokan', unit: 'aset' }
   };
-  var FLOW_NAMES = { check: 'Pengecekan Kondisi', out: 'Barang Keluar', in: 'Barang Masuk/Kembali', group: 'Kelompokkan ke Kabinet/Box' };
-  var PAGE_TITLES = { home: 'Dashboard', scan: 'Scan & Keranjang', inventory: 'Data Inventory', containers: 'Manajemen Kabinet & Box', history: 'Riwayat', labels: 'Cetak QR Code' };
+  var FLOW_NAMES = { check: 'Pengecekan Kondisi', out: 'Barang Keluar', in: 'Barang Masuk/Kembali', group: 'Kelompokkan ke Storage' };
+  var PAGE_TITLES = { home: 'Dashboard', scan: 'Scan & Keranjang', inventory: 'Data Inventory', containers: 'Manajemen Storage', history: 'Riwayat', labels: 'Cetak QR Code' };
   var ACTION_LABEL = { KELUAR: 'Keluar', MASUK: 'Masuk', INSPEKSI: 'Pengecekan', KELOMPOK: 'Kelompok', LEPAS: 'Lepas', IMPORT: 'Didaftarkan', EDIT: 'Edit', NONAKTIF: 'Nonaktif' };
-  var TYPE_LABELS = {
-    'MODUL': 'Modul LED', 'BOX': 'Box / Case', 'POWER SUPPLY': 'Power Supply', 'MOBO': 'MOBO', 'BRACKET': 'Bracket',
-    'POWER PANEL LISTRIK 3 PHASE': 'Power Panel Listrik 3 Phase', 'PROSESSOR': 'Prosessor', 'LIGHTING': 'Lighting',
-    'LIGHTING STAND': 'Lighting Stand', 'KABEL JUMPER MALE 120CM': 'Kabel Jumper Male 120CM', 'KABEL JUMPER BESAR': 'Kabel Jumper Besar',
-    'KABEL LAN 120CM': 'Kabel LAN 120CM', 'KLEM BUTTERFLY HITAM': 'Klem Butterfly Hitam', 'BAUT HEXAGONE': 'Baut Hexagone',
-    'MODUL BACKUP': 'Modul Backup', 'POWER SUPPLY BACKUP': 'Power Supply Backup', 'MOBO BACKUP': 'Mobo Backup', 'REGGING': 'Regging',
-    'TOOLS': 'Tools', 'KABEL XLR': 'Kabel XLR', 'MIXER LAMPU': 'Mixer Lampu', 'KABEL LAN PANJANG': 'Kabel LAN Panjang',
-    'TRIPOD': 'Tripod', 'LIGHT STAND ACCESORIS': 'Light Stand Accesoris'
-  };
-  var typeLabel = function (t) { return TYPE_LABELS[t] || t || '-'; };
+  var ON_DUTY = 'On Duty';
+  var NEEDS_NOTE = { 'Need Maintenance': true, 'Broken': true };
 
-  var state = { me: null, items: [], containers: [], stats: {}, transactions: [], types: Object.keys(TYPE_LABELS) };
+  // lists come from the sheet's Lists tab at login (categories, sub-categories, places, storage types)
+  var state = { me: null, items: [], storages: [], stats: {}, transactions: [],
+    lists: { categories: [], subcategories: [], places: ['Storage'], storageTypes: [] },
+    conditions: ['Good', 'Need Maintenance', 'Broken', 'Untested'], statuses: ['Active', 'Passive'] };
   var session = null;
   // One backend per unit (a sheet plus its script). config.js lists them; a single apiUrl is one unit.
   var units = Array.isArray(cfg.units) && cfg.units.length ? cfg.units.filter(function (u) { return u && u.apiUrl; })
@@ -242,10 +237,12 @@
     if (!d) return;
     lastRefresh = Date.now();
     if (d.items) state.items = d.items;
-    if (d.containers) state.containers = d.containers;
+    if (d.storages) state.storages = d.storages;
     if (d.stats) state.stats = d.stats;
     if (d.transactions) state.transactions = d.transactions;
-    if (d.types && d.types.length) state.types = d.types;
+    if (d.lists) state.lists = d.lists;
+    if (d.conditions) state.conditions = d.conditions;
+    if (d.statuses) state.statuses = d.statuses;
     if (d.me) state.me = d.me;
     if (d.dataRev) sync.dataRev = d.dataRev;
     renderAll();
@@ -505,10 +502,10 @@
       var x = state.items[i];
       if (x.id.toLowerCase() === k || (x.qrValue && x.qrValue.toLowerCase() === k)) { item = x; break; }
     }
-    for (var j = 0; j < state.containers.length; j++) {
-      if (state.containers[j].cabinetId.toLowerCase() === k) { container = state.containers[j]; break; }
+    for (var j = 0; j < state.storages.length; j++) {
+      if (state.storages[j].storageId.toLowerCase() === k) { container = state.storages[j]; break; }
     }
-    var members = container ? state.items.filter(function (x) { return x.cabinetId === container.cabinetId; }) : [];
+    var members = container ? state.items.filter(function (x) { return x.storageId === container.storageId; }) : [];
     return { item: item, container: container, members: members };
   }
 
@@ -517,8 +514,8 @@
     if (hit.item || hit.container) return Promise.resolve(hit);
     return api('lookup', { code: code }, { silent: true }).then(function (d) {
       if (d.item && !state.items.some(function (x) { return x.id === d.item.id; })) state.items.push(d.item);
-      if (d.container && !state.containers.some(function (c) { return c.cabinetId === d.container.cabinetId; })) state.containers.push(d.container);
-      return { item: d.item, container: d.container, members: d.members || [] };
+      if (d.storage && !state.storages.some(function (c) { return c.storageId === d.storage.storageId; })) state.storages.push(d.storage);
+      return { item: d.item, container: d.storage, members: d.members || [] };
     });
   }
 
@@ -537,34 +534,34 @@
   function addHit(hit, code) {
     if (flow === 'group') {
       if (hit.container) {
-        if (carts.group.length && groupTarget && groupTarget !== hit.container.cabinetId) {
+        if (carts.group.length && groupTarget && groupTarget !== hit.container.storageId) {
           scanStatus('Keranjang masih untuk ' + groupTarget + '. Kosongkan dulu untuk ganti tujuan.', 'err');
-          flashScan('err', hit.container.cabinetId, 'Keranjang masih untuk ' + groupTarget);
+          flashScan('err', hit.container.storageId, 'Keranjang masih untuk ' + groupTarget);
           buzz(false); return false;
         }
-        setGroupTarget(hit.container.cabinetId);
-        scanStatus('Tujuan: ' + hit.container.cabinetId + ' (' + hit.container.name + '). Sekarang scan isinya.', 'ok');
-        flashScan('ok', hit.container.cabinetId, 'Tujuan dipilih. Sekarang scan isinya.');
+        setGroupTarget(hit.container.storageId);
+        scanStatus('Tujuan: ' + hit.container.storageId + ' (' + hit.container.name + '). Sekarang scan isinya.', 'ok');
+        flashScan('ok', hit.container.storageId, 'Tujuan dipilih. Sekarang scan isinya.');
         buzz(true); renderGroupPick(); persistCarts(); return true;
       }
       if (!groupTarget) {
-        scanStatus('Pilih atau scan kabinet/box tujuan dulu.', 'err');
-        flashScan('err', hit.item.id, 'Scan kabinet/box tujuan dulu');
+        scanStatus('Pilih atau scan storage tujuan dulu.', 'err');
+        flashScan('err', hit.item.id, 'Scan storage tujuan dulu');
         buzz(false); return false;
       }
       return addedFeedback(pushCart(hit.item, 'group', ''), hit.item, 'group');
     }
     var added = 0, total = 0;
     if (hit.container) {
-      hit.members.forEach(function (m) { total++; if (pushCart(m, flow, hit.container.cabinetId)) added++; });
+      hit.members.forEach(function (m) { total++; if (pushCart(m, flow, hit.container.storageId)) added++; });
       if (hit.item) { total++; if (pushCart(hit.item, flow, '')) added++; }
       if (!total) {
-        scanStatus('Wadah ' + hit.container.cabinetId + ' belum punya isi.', 'err');
-        flashScan('err', hit.container.cabinetId, 'Wadah ini belum punya isi');
+        scanStatus('Wadah ' + hit.container.storageId + ' belum punya isi.', 'err');
+        flashScan('err', hit.container.storageId, 'Wadah ini belum punya isi');
         buzz(false); return false;
       }
-      scanStatus(added + ' dari ' + total + ' aset wadah ' + hit.container.cabinetId + ' masuk keranjang.', added ? 'ok' : 'err');
-      flashScan(added ? 'ok' : 'warn', hit.container.cabinetId, added ? added + ' aset masuk · ' + carts[flow].length + ' di keranjang' : 'Semua isinya sudah di keranjang');
+      scanStatus(added + ' dari ' + total + ' aset wadah ' + hit.container.storageId + ' masuk keranjang.', added ? 'ok' : 'err');
+      flashScan(added ? 'ok' : 'warn', hit.container.storageId, added ? added + ' aset masuk · ' + carts[flow].length + ' di keranjang' : 'Semua isinya sudah di keranjang');
       buzz(added ? 'ok' : 'warn'); return added > 0;
     }
     return addedFeedback(pushCart(hit.item, flow, ''), hit.item, flow);
@@ -573,7 +570,7 @@
     var n = carts[f].length;
     if (added) {
       scanStatus('Masuk keranjang: ' + item.id + ' · ' + n + ' di keranjang', 'ok');
-      flashScan('ok', item.id, (item.name || typeLabel(item.type)) + ' · ke-' + n + ' di keranjang');
+      flashScan('ok', item.id, (item.name || item.subcategory) + ' · ke-' + n + ' di keranjang');
       buzz('ok'); return true;
     }
     scanStatus('Sudah ada di keranjang: ' + item.id, 'warn');
@@ -582,19 +579,19 @@
   }
 
   /** Newest scan goes to the top of the cart so the operator sees it land. */
-  function pushCart(item, f, cabinetId) {
+  function pushCart(item, f, storageId) {
     if (!item) return false;
     var cart = carts[f];
     for (var i = 0; i < cart.length; i++) {
       if (cart[i].id !== item.id) continue;
-      if (cabinetId && cart[i]._cartCabinetId !== cabinetId) {
-        cart[i]._cartCabinetId = cabinetId;
-        queueOp({ op: 'add', flow: f, items: [{ id: item.id, cab: cabinetId }] });
+      if (storageId && cart[i]._cartCabinetId !== storageId) {
+        cart[i]._cartCabinetId = storageId;
+        queueOp({ op: 'add', flow: f, items: [{ id: item.id, cab: storageId }] });
       }
       return false;
     }
-    cart.unshift(cartCopy(item, cabinetId, Date.now()));
-    queueOp({ op: 'add', flow: f, items: [{ id: item.id, cab: cabinetId || '' }] });
+    cart.unshift(cartCopy(item, storageId, Date.now()));
+    queueOp({ op: 'add', flow: f, items: [{ id: item.id, cab: storageId || '' }] });
     renderCart();
     return true;
   }
@@ -667,7 +664,7 @@
       Object.keys(carts).forEach(function (f) {
         carts[f] = ((saved.carts && saved.carts[f]) || []).map(function (e) { return byId[e.id] ? cartCopy(byId[e.id], e.cab, 0) : null; }).filter(Boolean);
       });
-      if (saved.groupTarget && state.containers.some(function (c) { return c.cabinetId === saved.groupTarget; })) groupTarget = saved.groupTarget;
+      if (saved.groupTarget && state.storages.some(function (c) { return c.storageId === saved.groupTarget; })) groupTarget = saved.groupTarget;
       cartsReady = true;
     }
     setFlow(flow);
@@ -746,7 +743,7 @@
     });
     groupTarget = st.target || '';
     sync.ops.forEach(function (op) { applyOpLocal(op, byId, before); });
-    if (groupTarget && !state.containers.some(function (c) { return c.cabinetId === groupTarget; })) unknown++;
+    if (groupTarget && !state.storages.some(function (c) { return c.storageId === groupTarget; })) unknown++;
     var sel = $('groupTarget');
     if (sel && !unknown) sel.value = groupTarget;
     renderCart();
@@ -798,19 +795,19 @@
       sc.textContent = cart.length + ' ' + FLOWS[flow].unit;
     }
     $('cartTitle').textContent = FLOWS[flow].title + ' · ' + cart.length;
-    var byType = {};
-    cart.forEach(function (x) { byType[x.type] = (byType[x.type] || 0) + 1; });
-    $('cartSummary').textContent = cart.length ? Object.keys(byType).map(function (t) { return byType[t] + ' ' + typeLabel(t); }).join(' · ') : '';
+    var byKind = {};
+    cart.forEach(function (x) { var k = x.subcategory || x.category || '-'; byKind[k] = (byKind[k] || 0) + 1; });
+    $('cartSummary').textContent = cart.length ? Object.keys(byKind).map(function (t) { return byKind[t] + ' ' + t; }).join(' · ') : '';
     $('saveBtn').disabled = !cart.length;
     $('saveBtn').textContent = flow === 'group' ? 'Simpan ' + cart.length + ' aset ke wadah' : 'Simpan ' + cart.length + ' unit';
     persistCarts();
     if (!cart.length) { $('cartList').innerHTML = '<div class="empty">Belum ada barang. Scan QR, ketik ID, atau pilih dari daftar inventaris.</div>'; return; }
     var now = Date.now();
     $('cartList').innerHTML = cart.map(function (x) {
-      var cab = x._cartCabinetId || x.cabinetId;
+      var cab = x._cartCabinetId || x.storageId;
       var fresh = now - (x._at || 0) < 1500 ? ' new' : '';
-      return '<div class="item' + fresh + '"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) +
-        ' ' + pillStatus(x.locationStatus) + (cab ? ' <span class="pill">' + esc(cab) + '</span>' : '') + '</div></div>' +
+      return '<div class="item' + fresh + '"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(x.subcategory || x.category) +
+        ' ' + pillPlace(x) + pillStatus(x) + (cab ? ' <span class="pill">' + esc(cab) + '</span>' : '') + '</div></div>' +
         '<div class="ops"><button class="btn secondary small" type="button" data-remove="' + esc(x.id) + '">Hapus</button></div></div>';
     }).join('');
   }
@@ -825,25 +822,35 @@
     var n = cart.length;
     var shownIds = cart.map(function (x) { return x.id; });
     var fields = '';
+    var me = state.me ? state.me.name : '';
+    var autoLine = '<div><label>Tanggal</label><input value="' + esc(new Date().toLocaleDateString('id-ID')) + '" disabled></div>' +
+      '<div><label>Penanggung jawab</label><input value="' + esc(me) + '" disabled></div>';
+    var opts = function (list, cur) { return list.map(function (v) { return '<option' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join(''); };
     if (flow === 'check') {
-      fields = '<label>Hasil pemeriksaan *</label><select name="condition"><option value="BAIK"' + (dr.condition === 'BAIK' || !dr.condition ? ' selected' : '') + '>BAIK</option><option value="RUSAK"' + (dr.condition === 'RUSAK' ? ' selected' : '') + '>RUSAK</option></select>' +
-        '<div id="damageWrap"' + (dr.condition === 'RUSAK' ? '' : ' class="hidden"') + '><label>Keterangan kerusakan *</label><textarea name="damageNote" placeholder="Contoh: pixel mati, power tidak menyala, casing retak">' + esc(dr.damageNote || '') + '</textarea></div>' +
-        '<label>Catatan umum (opsional)</label><textarea name="note">' + esc(dr.note || '') + '</textarea>' +
-        '<p class="small muted" style="margin-top:10px">Hasil ini berlaku untuk semua ' + n + ' unit di keranjang.</p>';
-    } else {
-      var isOut = flow === 'out';
+      var cond = dr.condition || 'Good';
       fields = '<div class="formgrid">' +
-        '<div><label>Tanggal *</label><input name="eventDate" type="date" value="' + esc(dr.eventDate || today()) + '"></div>' +
-        '<div><label>Nama acara / proyek</label><input name="eventName" value="' + esc(dr.eventName || '') + '" placeholder="Contoh: Konser / Seminar"></div>' +
-        '<div class="full"><label>' + (isOut ? 'Lokasi pemasangan / tujuan *' : 'Lokasi asal / acara *') + '</label><input name="location" value="' + esc(dr.location || '') + '" placeholder="' + (isOut ? 'Contoh: Ballroom Hotel ABC' : 'Contoh: Ballroom Hotel ABC') + '"></div>' +
-        (isOut ? '' : '<div class="full"><label>Disimpan di</label><input name="storeLocation" value="' + esc(dr.storeLocation || 'Gudang') + '" placeholder="Contoh: Gudang Kubik"></div>') +
+        '<div><label>Hasil pemeriksaan *</label><select name="condition">' + opts(state.conditions, cond) + '</select></div>' +
+        '<div><label>Status *</label><select name="status">' + opts(state.statuses, dr.status || 'Active') + '</select></div>' +
+        '<div class="full"><label id="noteLabel">' + (NEEDS_NOTE[cond] ? 'Catatan * (apa yang perlu diperbaiki?)' : 'Catatan umum (opsional)') + '</label><textarea name="note" placeholder="Contoh: konektor longgar, lensa berjamur">' + esc(dr.note || '') + '</textarea></div></div>' +
+        '<p class="small muted" style="margin-top:10px">Hasil dan status ini berlaku untuk semua ' + n + ' unit di keranjang.</p>';
+    } else if (flow === 'out') {
+      fields = '<div class="formgrid">' + autoLine +
+        '<div class="full"><label>Lokasi tujuan / Acara *</label><input name="location" value="' + esc(dr.location || '') + '" placeholder="Contoh: Wisuda UGM, Hotel Tentrem"></div>' +
+        '<div class="full"><label>Catatan umum (opsional)</label><textarea name="note">' + esc(dr.note || '') + '</textarea></div></div>';
+    } else {
+      var origins = cart.map(function (x) { return x.destination; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+      fields = '<div class="formgrid">' + autoLine +
+        '<div class="full"><label>Lokasi asal / acara</label><input value="' + esc(origins.join(', ') || '-') + '" disabled></div>' +
+        '<div class="full"><label>Disimpan di *</label><select name="storeLocation"><option value="">Pilih</option>' + opts(state.lists.places, dr.storeLocation || '') + '</select></div>' +
         '<div class="full"><label>Catatan umum (opsional)</label><textarea name="note">' + esc(dr.note || '') + '</textarea></div></div>';
     }
     var d = openDialog('<form><h2>' + esc(FLOW_NAMES[flow]) + ' · ' + n + ' unit</h2>' + fields +
       '<div class="actions"><button class="btn secondary" type="button" data-r="0">Batal</button><button class="btn success" type="submit">Simpan ' + n + ' unit</button></div></form>');
     var form = d.querySelector('form');
-    var cond = form.querySelector('[name=condition]');
-    if (cond) cond.addEventListener('change', function () { form.querySelector('#damageWrap').classList.toggle('hidden', cond.value !== 'RUSAK'); });
+    var condSel = form.querySelector('[name=condition]');
+    if (condSel) condSel.addEventListener('change', function () {
+      $('noteLabel').textContent = NEEDS_NOTE[condSel.value] ? 'Catatan * (apa yang perlu diperbaiki?)' : 'Catatan umum (opsional)';
+    });
     d.querySelector('[data-r="0"]').addEventListener('click', closeDialog);
     var first = form.querySelector('input[name=location], select'); if (first) first.focus();
     form.addEventListener('submit', function (e) {
@@ -851,11 +858,10 @@
       var f = {};
       new FormData(form).forEach(function (v, k) { f[k] = String(v).trim(); });
       if (flow === 'check') {
-        if (f.condition === 'RUSAK' && !f.damageNote) { toast('Keterangan kerusakan wajib diisi.', true); form.querySelector('[name=damageNote]').focus(); return; }
-      } else {
-        if (!f.eventDate) { toast('Tanggal wajib diisi.', true); form.querySelector('[name=eventDate]').focus(); return; }
-        if (!f.location) { toast('Lokasi wajib diisi.', true); form.querySelector('[name=location]').focus(); return; }
-      }
+        if (NEEDS_NOTE[f.condition] && !f.note) { toast('Catatan wajib diisi untuk kondisi ' + f.condition + '.', true); form.querySelector('[name=note]').focus(); return; }
+      } else if (flow === 'out') {
+        if (!f.location) { toast('Lokasi tujuan / acara wajib diisi.', true); form.querySelector('[name=location]').focus(); return; }
+      } else if (!f.storeLocation) { toast('Pilih tempat simpan.', true); form.querySelector('[name=storeLocation]').focus(); return; }
       drafts[flow] = f;
       persistCarts();
       closeDialog();
@@ -870,17 +876,18 @@
       var shown = {}; (shownIds || []).forEach(function (id) { shown[id] = true; });
       var cart = carts[thisFlow].filter(function (x) { return !shownIds || shown[x.id]; });
       if (!cart.length) { toast('Keranjang sudah kosong; mungkin sudah disimpan dari perangkat lain.', true); return; }
+      // Date and person in charge are filled by the server (today, the login); the form sends the rest.
       var payload = { action: FLOWS[thisFlow].action, ids: cart.map(function (x) { return x.id; }), note: f.note || '' };
-      payload.cabinetIds = cart.map(function (x) { return x._cartCabinetId; }).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
       payload.fromCart = sync.on && !sync.ops.length;
-      if (thisFlow === 'check') { payload.condition = f.condition; payload.damageNote = f.condition === 'RUSAK' ? f.damageNote : ''; }
-      else { payload.eventDate = f.eventDate; payload.location = f.location; payload.eventName = f.eventName || ''; if (thisFlow === 'in') payload.storeLocation = f.storeLocation || ''; }
+      if (thisFlow === 'check') { payload.condition = f.condition; payload.status = f.status; }
+      else if (thisFlow === 'out') payload.location = f.location;
+      else payload.storeLocation = f.storeLocation;
       pendingBatch[thisFlow] = pendingBatch[thisFlow] || uuid();
       api('commit', payload, { batchId: pendingBatch[thisFlow], loadingText: 'Menyimpan ' + cart.length + ' unit...' }).then(function (d) {
         delete pendingBatch[thisFlow];
         var saved = {}; payload.ids.forEach(function (id) { saved[id] = true; });
         carts[thisFlow] = carts[thisFlow].filter(function (x) { return !saved[x.id]; });
-        drafts[thisFlow] = thisFlow === 'check' ? { condition: 'BAIK' } : {};
+        drafts[thisFlow] = thisFlow === 'check' ? { condition: 'Good', status: 'Active' } : {};
         applySnapshot(d);
         if (d.cart) applyCartState(d.cart, true);
         toast(d.message || 'Tersimpan.');
@@ -913,8 +920,8 @@
       if (!yes) return;
       var key = 'group-' + mode;
       pendingBatch[key] = pendingBatch[key] || uuid();
-      var call = mode === 'assign' ? api('container.assign', { cabinetId: groupTarget, ids: ids }, { batchId: pendingBatch[key], loadingText: 'Menyimpan...' })
-        : api('container.unassign', { ids: ids }, { batchId: pendingBatch[key], loadingText: 'Menyimpan...' });
+      var call = mode === 'assign' ? api('storage.assign', { storageId: groupTarget, ids: ids }, { batchId: pendingBatch[key], loadingText: 'Menyimpan...' })
+        : api('storage.unassign', { ids: ids }, { batchId: pendingBatch[key], loadingText: 'Menyimpan...' });
       call.then(function (d) {
         delete pendingBatch[key];
         var saved = {}; ids.forEach(function (id) { saved[id] = true; });
@@ -938,10 +945,10 @@
 
   function renderGroupTarget() {
     var sel = $('groupTarget');
-    sel.innerHTML = '<option value="">Pilih kabinet / box</option>' + state.containers.map(function (c) {
-      return '<option value="' + esc(c.cabinetId) + '">' + esc(c.containerType === 'BOX' ? 'Box' : 'Kabinet') + ' · ' + esc(c.cabinetId) + ' — ' + esc(c.name) + ' (' + c.itemCount + ')</option>';
+    sel.innerHTML = '<option value="">Pilih storage</option>' + state.storages.map(function (c) {
+      return '<option value="' + esc(c.storageId) + '">' + esc(c.storageType) + ' · ' + esc(c.storageId) + ' — ' + esc(c.name) + ' (' + c.itemCount + ')</option>';
     }).join('');
-    if (groupTarget && !state.containers.some(function (c) { return c.cabinetId === groupTarget; })) groupTarget = '';
+    if (groupTarget && !state.storages.some(function (c) { return c.storageId === groupTarget; })) groupTarget = '';
     sel.value = groupTarget;
   }
 
@@ -951,26 +958,26 @@
     return state.items.filter(function (x) {
       if (inCart[x.id]) return false;
       if (!q) return true;
-      return [x.id, x.name, x.category, x.type, x.cabinetId].join(' ').toLowerCase().indexOf(q) >= 0;
+      return [x.id, x.brand, x.model, x.serial, x.category, x.subcategory, x.storageId].join(' ').toLowerCase().indexOf(q) >= 0;
     });
   }
   function renderGroupPick() {
     if (flow !== 'group') return;
     lazyList($('groupPickList'), groupPickMatches(), function (x) {
-      return '<div class="item"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) +
-        (x.cabinetId ? ' <span class="pill cab">' + esc(x.cabinetId) + '</span>' : ' <span class="muted">belum ada wadah</span>') + '</div></div>' +
+      return '<div class="item"><div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(x.subcategory) +
+        (x.storageId ? ' <span class="pill cab">' + esc(x.storageId) + '</span>' : ' <span class="muted">belum ada wadah</span>') + '</div></div>' +
         '<div class="ops"><button class="btn secondary small" type="button" data-pick="' + esc(x.id) + '">+ Tambah</button></div></div>';
     }, { chunk: 40, empty: '<div class="empty">Tidak ada aset yang cocok.</div>' });
   }
 
   // ---------- rendering ----------
 
-  function pillCondition(c) {
-    if (c === 'BAIK') return '<span class="pill good">BAIK</span>';
-    if (c === 'RUSAK') return '<span class="pill bad">RUSAK</span>';
-    return '<span class="pill">BELUM DICEK</span>';
-  }
-  function pillStatus(s) { return s === 'DI LUAR' ? '<span class="pill out">DI LUAR</span>' : '<span class="pill good">DI GUDANG</span>'; }
+  var COND_PILL = { 'Good': 'good', 'Need Maintenance': 'warn', 'Broken': 'bad', 'Untested': 'plain' };
+  function pillCondition(c) { c = c || 'Untested'; return '<span class="pill ' + (COND_PILL[c] || 'plain') + '">' + esc(c) + '</span>'; }
+  /** Where it is: the storage place, or On Duty while it is out. */
+  function pillPlace(x) { return x.out ? '<span class="pill out">' + ON_DUTY + '</span>' : '<span class="pill good">' + esc(x.location || 'Storage') + '</span>'; }
+  function pillStatus(x) { return x.status === 'Passive' ? '<span class="pill plain">Passive</span>' : ''; }
+  function kindLine(x) { return [x.subcategory, x.category].filter(Boolean).join(' · '); }
   function actionPill(a) {
     var cls = { KELUAR: 'out', MASUK: 'good', INSPEKSI: 'cab', KELOMPOK: 'gold', LEPAS: 'gold' }[a] || 'plain';
     return '<span class="pill ' + cls + '">' + esc(ACTION_LABEL[a] || a) + '</span>';
@@ -980,6 +987,7 @@
     renderHome();
     renderInventory();
     renderContainers();
+    renderStorageTypes();
     renderGroupTarget();
     renderHistory();
     renderLabels();
@@ -989,8 +997,9 @@
 
   function renderHome() {
     var s = state.stats || {};
-    var cards = [['Total unit aktif', s.total, ''], ['Kondisi baik', s.good, 'ok'], ['Kondisi rusak', s.damaged, s.damaged ? 'bad' : ''], ['Belum dicek', s.unchecked, ''],
-      ['Sedang di luar', s.out, s.out ? 'hot' : ''], ['Tersedia di gudang', s.inWarehouse, ''], ['Kabinet / Box', s.boxes, '']];
+    var cards = [['Total unit aktif', s.total, ''], ['Good', s.good, 'ok'], ['Need Maintenance', s.needMaintenance, s.needMaintenance ? 'warn' : ''],
+      ['Broken', s.broken, s.broken ? 'bad' : ''], ['Untested', s.untested, ''], ['On Duty', s.onDuty, s.onDuty ? 'hot' : ''],
+      ['Tersimpan', s.inStorage, ''], ['Passive', s.passive, ''], ['Storage', s.storages, '']];
     $('statCards').innerHTML = cards.map(function (c) {
       return '<div class="card ' + c[2] + '"><div class="label">' + c[0] + '</div><div class="num">' + Number(c[1] || 0).toLocaleString('id-ID') + '</div></div>';
     }).join('');
@@ -1002,49 +1011,52 @@
   function groupTxns(rows) {
     var out = [], cur = null;
     rows.forEach(function (t) {
-      var key = t.batch_id ? 'b:' + t.batch_id : 'k:' + [t.action, t.ts, t.user, t.event_date, t.location, t.event_name, t.condition, t.damage_note].join('|');
+      var key = t.batch_id ? 'b:' + t.batch_id : 'k:' + [t.action, t.ts, t.user, t.from, t.to, t.condition, t.status, t.note].join('|');
       if (!cur || cur.key !== key) { cur = { key: key, action: t.action, first: t, items: [] }; out.push(cur); }
       cur.items.push(t);
     });
     return out;
   }
+  /** What a save did, in a few words: where it went, where it came back from, the result of a check. */
+  function txnDetail(t) {
+    var d = '';
+    if (t.action === 'INSPEKSI') d = pillCondition(t.condition) + (t.status === 'Passive' ? '<span class="pill plain">Passive</span>' : '');
+    else if (t.action === 'KELUAR') d = '<span>Ke ' + esc(t.to) + '</span>';
+    else if (t.action === 'MASUK') d = '<span>Dari ' + esc(t.from || '-') + ' · disimpan di ' + esc(t.to) + '</span>';
+    else if (t.action === 'KELOMPOK' || t.action === 'LEPAS') d = t.storage_id ? '<span class="pill cab">' + esc(t.storage_id) + '</span>' : '';
+    else if (t.action === 'IMPORT' && t.to) d = '<span>' + esc(t.to) + '</span>';
+    if (t.note && t.action !== 'IMPORT') d += '<span class="muted">' + esc(t.note) + '</span>';
+    return d;
+  }
   function batchRow(g) {
     var t = g.first, n = g.items.length;
-    var where = [t.location, t.event_name].filter(Boolean).join(' · ');
     var what = n === 1 ? esc(t.item_id) : n + ' unit';
-    var detail = '';
-    if (g.action === 'INSPEKSI') detail = pillCondition(t.condition) + (t.damage_note ? '<span class="muted">' + esc(t.damage_note) + '</span>' : '');
-    else if (g.action === 'KELOMPOK' || g.action === 'LEPAS') detail = t.cabinet_id ? '<span class="pill cab">' + esc(t.cabinet_id) + '</span>' : '';
-    else if (where) detail = '<span>' + esc(where) + '</span>';
-    if (t.note && g.action !== 'INSPEKSI') detail += '<span class="muted">' + esc(t.note) + '</span>';
-    var when = shortDate(t.event_date || t.ts) + (hhmm(t.ts) ? ' ' + hhmm(t.ts) : '');
-    var types = {}; g.items.forEach(function (x) { types[x.item_type] = (types[x.item_type] || 0) + 1; });
-    var typeLine = Object.keys(types).map(function (k) { return types[k] + ' ' + typeLabel(k); }).join(' · ');
-    return '<details class="batch"><summary><div class="info"><div class="line1">' + actionPill(g.action) + '<strong>' + what + '</strong><span class="muted">' + esc(typeLine) + '</span></div>' +
-      '<div class="meta">' + detail + '</div></div><div class="when"><span>' + esc(when) + '</span><span class="muted">' + esc(t.user) + '</span></div>' + ICON.chev + '</summary>' +
+    var when = shortDate(t.ts) + (hhmm(t.ts) ? ' ' + hhmm(t.ts) : '');
+    var kinds = {}; g.items.forEach(function (x) { var k = x.category || '-'; kinds[k] = (kinds[k] || 0) + 1; });
+    var kindText = n === 1 ? t.item_name : Object.keys(kinds).map(function (k) { return kinds[k] + ' ' + k; }).join(' · ');
+    return '<details class="batch"><summary><div class="info"><div class="line1">' + actionPill(g.action) + '<strong>' + what + '</strong><span class="muted">' + esc(kindText) + '</span></div>' +
+      '<div class="meta">' + txnDetail(t) + '</div></div><div class="when"><span>' + esc(when) + '</span><span class="muted">' + esc(t.user) + '</span></div>' + ICON.chev + '</summary>' +
       '<div class="rows">' + g.items.map(function (x) {
-        return '<div class="rowline"><strong>' + esc(x.item_id) + '</strong><span class="muted">' + esc(x.item_name) + (x.cabinet_id ? ' · ' + esc(x.cabinet_id) : '') + '</span></div>';
+        return '<div class="rowline"><strong>' + esc(x.item_id) + '</strong><span class="muted">' + esc(x.item_name) + (x.storage_id ? ' · ' + esc(x.storage_id) : '') + '</span></div>';
       }).join('') + '</div></details>';
   }
   function txnLine(t) {
-    var where = [t.location, t.event_name].filter(Boolean).join(' · ');
-    var detail = t.action === 'INSPEKSI' ? pillCondition(t.condition) + (t.damage_note ? '<span class="muted">' + esc(t.damage_note) + '</span>' : '')
-      : (t.cabinet_id && (t.action === 'KELOMPOK' || t.action === 'LEPAS') ? '<span class="pill cab">' + esc(t.cabinet_id) + '</span>' : (where ? '<span>' + esc(where) + '</span>' : ''));
-    if (t.note && t.action !== 'INSPEKSI') detail += '<span class="muted">' + esc(t.note) + '</span>';
-    return '<div class="item"><div class="info"><div class="line1">' + actionPill(t.action) + '<strong>' + esc(shortDate(t.event_date || t.ts)) + '</strong><span class="muted">' + esc(hhmm(t.ts)) + ' · ' + esc(t.user) + '</span></div><div class="meta">' + detail + '</div></div></div>';
+    return '<div class="item"><div class="info"><div class="line1">' + actionPill(t.action) + '<strong>' + esc(shortDate(t.ts)) + '</strong><span class="muted">' + esc(hhmm(t.ts)) + ' · ' + esc(t.user) + '</span></div><div class="meta">' + txnDetail(t) + '</div></div></div>';
   }
 
   function inventoryMatches() {
     var q = $('inventorySearch').value.trim().toLowerCase();
     var f = inventoryFilter;
     return state.items.filter(function (x) {
-      if (f === 'in' && x.locationStatus === 'DI LUAR') return false;
-      if (f === 'out' && x.locationStatus !== 'DI LUAR') return false;
-      if (f === 'damaged' && x.condition !== 'RUSAK') return false;
-      if (f === 'unchecked' && x.condition) return false;
-      if (f === 'nocabinet' && x.cabinetId) return false;
+      if (f === 'in' && x.out) return false;
+      if (f === 'out' && !x.out) return false;
+      if (f === 'maint' && x.condition !== 'Need Maintenance') return false;
+      if (f === 'broken' && x.condition !== 'Broken') return false;
+      if (f === 'untested' && x.condition !== 'Untested') return false;
+      if (f === 'passive' && x.status !== 'Passive') return false;
+      if (f === 'nostorage' && x.storageId) return false;
       if (!q) return true;
-      return [x.id, x.name, x.category, x.type, x.cabinetId, x.location].join(' ').toLowerCase().indexOf(q) >= 0;
+      return [x.id, x.brand, x.model, x.serial, x.category, x.subcategory, x.storageId, x.location, x.destination, x.note].join(' ').toLowerCase().indexOf(q) >= 0;
     });
   }
   function renderInventory() {
@@ -1054,23 +1066,28 @@
   }
   function itemRow(x) {
     return '<div class="item tap" data-open="' + esc(x.id) + '" role="button" tabindex="0"><div class="info"><strong>' + esc(x.id) + '</strong><div>' + esc(x.name) +
-      ' <span class="muted">· ' + esc(typeLabel(x.type)) + (x.category ? ' · ' + esc(x.category) : '') + '</span></div>' +
-      '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' +
-      (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + (x.damageNote ? '<span class="muted">' + esc(x.damageNote) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
+      ' <span class="muted">· ' + esc(kindLine(x)) + '</span></div>' +
+      '<div class="meta">' + pillCondition(x.condition) + pillPlace(x) + pillStatus(x) + (x.out && x.destination ? '<span>' + esc(x.destination) + '</span>' : '') +
+      (x.storageId ? '<span class="pill cab">' + esc(x.storageId) + '</span>' : '') + (x.conditionNote ? '<span class="muted">' + esc(x.conditionNote) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
   }
   /** Tap a row: one sheet with everything you can do with the item. The likely action is the white one. */
   function itemSheet(id) {
     var x = state.items.filter(function (i) { return i.id === id; })[0];
     if (!x) return;
     var admin = state.me && state.me.role === 'admin';
-    var isOut = x.locationStatus === 'DI LUAR';
-    var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(x.id) + '</h2><div>' + esc(x.name) + ' <span class="muted">· ' + esc(typeLabel(x.type)) + (x.category ? ' · ' + esc(x.category) : '') + '</span></div>' +
-      '<div class="meta">' + pillCondition(x.condition) + pillStatus(x.locationStatus) + '<span>' + esc(x.location) + '</span>' + (x.cabinetId ? '<span class="pill cab">' + esc(x.cabinetId) + '</span>' : '') + '</div>' +
-      (x.damageNote ? '<p class="small muted" style="margin:6px 0 0">' + esc(x.damageNote) + '</p>' : '') +
+    var passive = x.status === 'Passive';
+    var canOut = !x.out && !passive;
+    var facts = [x.serial ? 'SN ' + x.serial : '', x.out && x.destination ? 'Di ' + x.destination : ''].filter(Boolean).join(' · ');
+    var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(x.id) + '</h2><div>' + esc(x.name) + ' <span class="muted">· ' + esc(kindLine(x)) + '</span></div>' +
+      '<div class="meta">' + pillCondition(x.condition) + pillPlace(x) + pillStatus(x) + (x.storageId ? '<span class="pill cab">' + esc(x.storageId) + '</span>' : '') + '</div>' +
+      (facts ? '<p class="small muted" style="margin:6px 0 0">' + esc(facts) + '</p>' : '') +
+      (x.conditionNote ? '<p class="small" style="margin:6px 0 0">' + esc(x.conditionNote) + '</p>' : '') +
+      (x.note ? '<p class="small muted" style="margin:6px 0 0">' + esc(x.note) + '</p>' : '') +
+      (passive ? '<p class="small muted" style="margin:6px 0 0">Passive: tidak bisa dikeluarkan. Ubah statusnya lewat Pengecekan Kondisi.</p>' : '') +
       (x.lastUser ? '<p class="small muted" style="margin:6px 0 0">Terakhir: ' + esc(x.updatedAt) + ' oleh ' + esc(x.lastUser) + '</p>' : '') + '</div></div>' +
       '<div class="sheet-grid">' +
-      '<button class="btn ' + (isOut ? 'secondary' : '') + '" type="button" data-a="out"' + (isOut ? ' disabled' : '') + '>' + ICON.out + 'Barang Keluar</button>' +
-      '<button class="btn ' + (isOut ? '' : 'secondary') + '" type="button" data-a="in"' + (isOut ? '' : ' disabled') + '>' + ICON.inn + 'Barang Masuk</button>' +
+      '<button class="btn ' + (canOut ? '' : 'secondary') + '" type="button" data-a="out"' + (canOut ? '' : ' disabled') + '>' + ICON.out + 'Barang Keluar</button>' +
+      '<button class="btn ' + (x.out ? '' : 'secondary') + '" type="button" data-a="in"' + (x.out ? '' : ' disabled') + '>' + ICON.inn + 'Barang Masuk</button>' +
       '<button class="btn secondary" type="button" data-a="check">' + ICON.check + 'Pengecekan Kondisi</button>' +
       '<button class="btn secondary" type="button" data-a="history">' + ICON.clock + 'Riwayat</button>' +
       (admin ? '<button class="btn secondary" type="button" data-a="edit">' + ICON.edit + 'Edit</button><button class="btn danger" type="button" data-a="deactivate">' + ICON.trash + 'Nonaktifkan</button>' : '') +
@@ -1093,22 +1110,29 @@
   }
 
   function renderContainers() {
-    lazyList($('containerList'), state.containers, containerRow, { empty: '<div class="empty">Belum ada kabinet/box. Tambah wadah dulu, lalu kelompokkan asetnya lewat Scan › Kelompokkan.</div>' });
+    lazyList($('containerList'), state.storages, containerRow, { empty: '<div class="empty">Belum ada storage. Tambah wadah dulu (pouch, tas, koper, kontainer), lalu kelompokkan asetnya lewat Scan › Kelompokkan.</div>' });
+  }
+  function renderStorageTypes() {
+    var sel = $('containerType');
+    if (!sel) return;
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">Pilih</option>' + state.lists.storageTypes.map(function (t) { return '<option>' + esc(t.value) + '</option>'; }).join('');
+    sel.value = cur;
   }
   function containerRow(c) {
-    return '<div class="item tap" data-copen="' + esc(c.cabinetId) + '" role="button" tabindex="0"><div class="info"><strong>' + esc(c.cabinetId) + ' <span class="pill gold">' + (c.containerType === 'BOX' ? 'Box' : 'Kabinet') + '</span></strong>' +
+    return '<div class="item tap" data-copen="' + esc(c.storageId) + '" role="button" tabindex="0"><div class="info"><strong>' + esc(c.storageId) + ' <span class="pill gold">' + esc(c.storageType) + '</span></strong>' +
       '<div>' + esc(c.name) + (c.category ? ' <span class="muted">· ' + esc(c.category) + '</span>' : '') + '</div>' +
-      '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.damagedCount ? '<span class="pill bad">' + c.damagedCount + ' rusak</span>' : '') +
-      (c.outCount ? '<span class="pill out">' + c.outCount + ' di luar</span>' : '') + (c.note ? '<span class="muted">' + esc(c.note) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
+      '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.brokenCount ? '<span class="pill bad">' + c.brokenCount + ' perlu perbaikan</span>' : '') +
+      (c.outCount ? '<span class="pill out">' + c.outCount + ' On Duty</span>' : '') + (c.note ? '<span class="muted">' + esc(c.note) + '</span>' : '') + '</div></div>' + ICON.chev + '</div>';
   }
   function containerSheet(cid) {
-    var c = state.containers.filter(function (k) { return k.cabinetId === cid; })[0];
+    var c = state.storages.filter(function (k) { return k.storageId === cid; })[0];
     if (!c) return;
     var dis = c.itemCount ? '' : ' disabled';
     var primary = !c.itemCount ? 'group' : (c.outCount === 0 ? 'out' : (c.outCount === c.itemCount ? 'in' : 'group'));
     var cls = function (a) { return a === primary ? 'btn' : 'btn secondary'; };
-    var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(c.cabinetId) + '</h2><div>' + esc(c.name) + ' <span class="muted">· ' + (c.containerType === 'BOX' ? 'Box' : 'Kabinet') + (c.category ? ' · ' + esc(c.category) : '') + '</span></div>' +
-      '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.damagedCount ? '<span class="pill bad">' + c.damagedCount + ' rusak</span>' : '') + (c.outCount ? '<span class="pill out">' + c.outCount + ' di luar</span>' : '') + '</div>' +
+    var d = openDialog('<div class="sheet-head"><div><h2 style="margin:0">' + esc(c.storageId) + '</h2><div>' + esc(c.name) + ' <span class="muted">· ' + esc(c.storageType) + (c.category ? ' · ' + esc(c.category) : '') + '</span></div>' +
+      '<div class="meta"><span>' + c.itemCount + ' aset</span>' + (c.brokenCount ? '<span class="pill bad">' + c.brokenCount + ' perlu perbaikan</span>' : '') + (c.outCount ? '<span class="pill out">' + c.outCount + ' On Duty</span>' : '') + '</div>' +
       (c.note ? '<p class="small muted" style="margin:6px 0 0">' + esc(c.note) + '</p>' : '') + '</div></div>' +
       '<div class="sheet-grid">' +
       '<button class="' + cls('group') + ' full" type="button" data-a="group">' + ICON.box + 'Kelompokkan aset ke sini</button>' +
@@ -1134,7 +1158,7 @@
     return state.transactions.filter(function (t) {
       if (a && t.action !== a) return false;
       if (!q) return true;
-      return [t.item_id, t.item_name, t.event_name, t.location, t.user, t.cabinet_id, t.note, t.batch_id].join(' ').toLowerCase().indexOf(q) >= 0;
+      return [t.item_id, t.item_name, t.category, t.from, t.to, t.user, t.storage_id, t.note, t.batch_id].join(' ').toLowerCase().indexOf(q) >= 0;
     });
   }
   function renderHistory() {
@@ -1153,16 +1177,42 @@
     }).catch(function (e) { toast(e.message, true); });
   }
 
+  /** Options for a select; selected marks the current value. */
+  function optionList(values, cur) {
+    return values.map(function (v) { return '<option' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
+  }
+  /** Keeps a sub-category select in step with its category select. */
+  function linkCategory(form) {
+    var cat = form.querySelector('[name=category]'), sub = form.querySelector('[name=subcategory]');
+    var fill = function () {
+      var cur = sub.value;
+      var subs = state.lists.subcategories.filter(function (s) { return !s.parent || s.parent === cat.value; }).map(function (s) { return s.value; });
+      sub.innerHTML = '<option value="">Pilih</option>' + optionList(subs, cur);
+    };
+    cat.addEventListener('change', fill);
+    fill();
+  }
+
   function editItem(id) {
     var x = state.items.filter(function (i) { return i.id === id; })[0];
     if (!x) return;
-    var types = state.types.map(function (t) { return '<option value="' + esc(t) + '"' + (t === x.type ? ' selected' : '') + '>' + esc(typeLabel(t)) + '</option>'; }).join('');
-    formDialog('Edit ' + x.id,
-      '<label>Nama barang *</label><input name="name" required value="' + esc(x.name) + '">' +
-      '<label>Jenis</label><select name="type">' + types + '</select>' +
-      '<label>Kategori</label><input name="category" value="' + esc(x.category) + '">' +
-      '<label>Lokasi saat ini</label><input name="location" value="' + esc(x.location) + '">'
-    ).then(function (f) {
+    var cats = state.lists.categories.map(function (c) { return c.value; });
+    var p = formDialog('Edit ' + x.id,
+      '<p class="small muted">Kode tidak berubah. Kondisi diubah lewat Pengecekan Kondisi.</p><div class="formgrid">' +
+      '<div><label>Kategori *</label><select name="category" required>' + optionList(cats, x.category) + '</select></div>' +
+      '<div><label>Sub-kategori *</label><select name="subcategory" required><option>' + esc(x.subcategory) + '</option></select></div>' +
+      '<div><label>Merk *</label><input name="brand" required value="' + esc(x.brand) + '"></div>' +
+      '<div><label>Type *</label><input name="model" required value="' + esc(x.model) + '"></div>' +
+      '<div><label>SN</label><input name="serial" value="' + esc(x.serial || '') + '"></div>' +
+      '<div><label>Status</label><select name="status">' + optionList(state.statuses, x.status) + '</select></div>' +
+      (x.out ? '' : '<div><label>Lokasi</label><select name="location">' + optionList(state.lists.places, x.location) + '</select></div>') +
+      '<div class="full"><label>Catatan umum</label><textarea name="note">' + esc(x.note || '') + '</textarea></div></div>'
+    );
+    var form = $('dlg').querySelector('form');
+    form.querySelector('[name=subcategory]').value = x.subcategory;
+    linkCategory(form);
+    form.querySelector('[name=subcategory]').value = x.subcategory;
+    p.then(function (f) {
       if (!f) return;
       f.id = id;
       api('item.update', f, { loadingText: 'Menyimpan...' }).then(function (d) { applySnapshot(d); toast(d.message); }).catch(function (e) { toast(e.message, true); });
@@ -1170,28 +1220,29 @@
   }
 
   function deactivateItem(id) {
-    confirmDialog('Nonaktifkan ' + id + '?', 'Barang hilang dari inventaris aktif, riwayatnya tetap tersimpan di sheet.', 'Nonaktifkan', true).then(function (yes) {
+    confirmDialog('Nonaktifkan ' + id + '?', 'Barang hilang dari inventaris aktif, riwayatnya tetap tersimpan di sheet. Kodenya tidak dipakai lagi.', 'Nonaktifkan', true).then(function (yes) {
       if (!yes) return;
       api('item.deactivate', { ids: [id] }, { batchId: uuid(), loadingText: 'Menyimpan...' }).then(function (d) { applySnapshot(d); toast(d.message); }).catch(function (e) { toast(e.message, true); });
     });
   }
 
   function editContainer(cid) {
-    var c = state.containers.filter(function (k) { return k.cabinetId === cid; })[0];
+    var c = state.storages.filter(function (k) { return k.storageId === cid; })[0];
     if (!c) return;
-    formDialog('Edit ' + c.cabinetId,
+    formDialog('Edit ' + c.storageId,
+      '<label>Jenis wadah</label><select name="storageType">' + optionList(state.lists.storageTypes.map(function (t) { return t.value; }), c.storageType) + '</select>' +
       '<label>Nama *</label><input name="name" required value="' + esc(c.name) + '">' +
       '<label>Kategori</label><input name="category" value="' + esc(c.category || '') + '">' +
       '<label>Catatan</label><input name="note" value="' + esc(c.note || '') + '">'
     ).then(function (f) {
       if (!f) return;
-      f.cabinetId = cid;
-      api('container.save', f, { loadingText: 'Menyimpan...' }).then(function (d) { applySnapshot(d); toast(d.message); }).catch(function (e) { toast(e.message, true); });
+      f.storageId = cid;
+      api('storage.save', f, { loadingText: 'Menyimpan...' }).then(function (d) { applySnapshot(d); toast(d.message); }).catch(function (e) { toast(e.message, true); });
     });
   }
 
   function addContainerToCart(cid, f) {
-    var members = state.items.filter(function (x) { return x.cabinetId === cid; });
+    var members = state.items.filter(function (x) { return x.storageId === cid; });
     if (!members.length) { toast('Wadah ' + cid + ' belum punya aset aktif.', true); return; }
     var added = 0;
     setFlow(f);
@@ -1215,7 +1266,7 @@
       resolveCode(String(code || '').trim()).then(function (hit) {
         closeDialog();
         buzz(true);
-        if (hit.item) itemSheet(hit.item.id); else if (hit.container) containerSheet(hit.container.cabinetId);
+        if (hit.item) itemSheet(hit.item.id); else if (hit.container) containerSheet(hit.container.storageId);
       }).catch(function (e) { done = false; buzz(false); toast(e.message, true); });
     }
     $('lookupClose').addEventListener('click', closeDialog);
@@ -1239,14 +1290,14 @@
 
   function labelMatches() {
     var q = $('labelSearch').value.trim().toLowerCase();
-    return state.items.filter(function (x) { return !q || [x.id, x.name, x.category, x.type].join(' ').toLowerCase().indexOf(q) >= 0; });
+    return state.items.filter(function (x) { return !q || [x.id, x.brand, x.model, x.serial, x.category, x.subcategory].join(' ').toLowerCase().indexOf(q) >= 0; });
   }
   function renderLabels() {
     var list = labelMatches();
     $('labelCount').textContent = Object.keys(labelSelected).length + ' dipilih · ' + list.length + ' hasil';
     lazyList($('labelList'), list, function (x) {
       return '<label class="item" style="margin:0;font-weight:400;font-size:14px;color:inherit;cursor:pointer"><input type="checkbox" data-label="' + esc(x.id) + '"' + (labelSelected[x.id] ? ' checked' : '') + '>' +
-        '<div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) + '</div></div></label>';
+        '<div class="info"><strong>' + esc(x.id) + '</strong><div class="meta">' + esc(x.name) + ' · ' + esc(x.subcategory) + (x.serial ? ' · SN ' + esc(x.serial) : '') + '</div></div></label>';
     }, { empty: '<div class="empty">Tidak ada barang.</div>' });
   }
   function qrSvg(text) {
@@ -1267,49 +1318,99 @@
     area.innerHTML = items.map(function (x) {
       // Long IDs may break only after - . / _ so a narrow label never splits them letter by letter.
       var id = esc(x.id).replace(/([-.\/_])/g, '$1<wbr>');
-      return '<div class="qrcard">' + qrSvg(x.qrValue || x.id) + '<div class="txt"><strong>' + id + '</strong><small>' + esc(x.name) + ' · ' + esc(typeLabel(x.type)) + '</small></div></div>';
+      return '<div class="qrcard">' + qrSvg(x.qrValue || x.id) + '<div class="txt"><strong>' + id + '</strong><small>' + esc(x.name) + (x.serial ? ' · SN ' + esc(x.serial) : '') + '</small></div></div>';
     }).join('');
     $('toast').className = 'toast';
     setTimeout(function () { window.print(); }, 150);
   }
 
-  // ---------- import and containers forms ----------
+  // ---------- add equipment and storage forms ----------
+
+  /** "Sony" -> "SON", the same rule the server uses: letters and digits, upper case, padded with X. */
+  function shortCode(text, n) {
+    var s = String(text || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    while (s.length < n) s += 'X';
+    return s.slice(0, n);
+  }
+  /** The code(s) the server will make, shown while the form is filled in. The server has the last word. */
+  function previewCodes(f) {
+    var cat = state.lists.categories.filter(function (c) { return c.value === f.category; })[0];
+    var sub = state.lists.subcategories.filter(function (c) { return c.value === f.subcategory; })[0];
+    if (!cat || !sub || !f.brand) return '';
+    var prefix = [cat.code || shortCode(cat.value, 2), sub.code || shortCode(sub.value, 3), shortCode(f.brand, 3)].join('-');
+    var tail = String(f.serial || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-4);
+    if (tail) return prefix + '-' + tail;
+    var max = 0, re = new RegExp('^' + prefix.replace(/-/g, '\\-') + '-(\\d{3,})$');
+    state.items.forEach(function (x) { var m = re.exec(x.id.toUpperCase()); if (m) max = Math.max(max, Number(m[1])); });
+    var pad = function (n) { n = String(n); while (n.length < 3) n = '0' + n; return n; };
+    var qty = Math.max(1, Math.min(200, Math.floor(Number(f.quantity) || 1)));
+    return prefix + '-' + pad(max + 1) + (qty > 1 ? ' s/d ' + prefix + '-' + pad(max + qty) : '');
+  }
 
   function importDialog() {
-    var types = state.types.map(function (t) { return '<option value="' + esc(t) + '">' + esc(typeLabel(t)) + '</option>'; }).join('');
-    formDialog('Tambah Aset',
-      '<p class="small muted">Untuk ID yang sudah tercetak di label. Satu ID per baris; ID dipertahankan apa adanya dan menjadi isi QR. Maksimal 2.000 ID per proses, duplikat dilewati.</p>' +
-      '<label>Jenis barang *</label><select name="type" required>' + types + '</select>' +
-      '<label>Nama barang *</label><input name="name" required placeholder="Contoh: Modul LED P2.9">' +
-      '<label>Kategori</label><input name="category" placeholder="Contoh: LED Screen">' +
-      '<label>Lokasi awal</label><input name="location" value="Gudang">' +
-      '<label>Daftar ID *</label><textarea name="ids" rows="7" required placeholder="1-MVG-12-25-NY-MD.001&#10;1-MVG-12-25-NY-MD.002"></textarea>',
-      'Tambah aset'
-    ).then(function (f) {
+    var cats = state.lists.categories.map(function (c) { return c.value; });
+    var p = formDialog('Tambah Aset',
+      '<p class="codeprev" id="codePreview">Kode dibuat otomatis dari kategori, sub-kategori, merk dan 4 digit terakhir SN (tanpa SN: nomor urut).</p>' +
+      '<div class="formgrid">' +
+      '<div><label>Kategori *</label><select name="category" required><option value="">Pilih</option>' + optionList(cats, '') + '</select></div>' +
+      '<div><label>Sub-kategori *</label><select name="subcategory" required><option value="">Pilih</option></select></div>' +
+      '<div><label>Merk *</label><input name="brand" required placeholder="Contoh: Sony" autocomplete="off"></div>' +
+      '<div><label>Type *</label><input name="model" required placeholder="Contoh: A7 III" autocomplete="off"></div>' +
+      '<div id="snWrap"><label>SN</label><input name="serial" placeholder="Nomor seri, kalau ada" autocomplete="off"></div>' +
+      '<div id="qtyWrap"><label>Jumlah unit</label><input name="quantity" type="number" min="1" max="200" value="1"></div>' +
+      '<div><label>Lokasi</label><select name="location">' + optionList(state.lists.places.concat([ON_DUTY]), state.lists.places[0]) + '</select></div>' +
+      '<div><label>Kondisi</label><select name="condition">' + optionList(state.conditions, 'Untested') + '</select></div>' +
+      '<div><label>Status</label><select name="status">' + optionList(state.statuses, 'Active') + '</select></div>' +
+      '<div class="full"><label>Catatan umum</label><textarea name="note" rows="2"></textarea></div>' +
+      '<div class="full"><label class="checkline"><input type="checkbox" name="labelled" value="1"> Label sudah tercetak: pakai ID yang ada</label>' +
+      '<textarea name="ids" rows="4" class="hidden" placeholder="Satu ID per baris"></textarea></div></div>',
+      'Tambah aset');
+    var form = $('dlg').querySelector('form');
+    linkCategory(form);
+    var field = function (n) { return form.querySelector('[name=' + n + ']'); };
+    var update = function () {
+      var labelled = field('labelled').checked;
+      var hasSerial = !!field('serial').value.trim();
+      $('snWrap').classList.toggle('hidden', labelled);
+      $('qtyWrap').classList.toggle('hidden', labelled || hasSerial);
+      field('ids').classList.toggle('hidden', !labelled);
+      field('ids').required = labelled;
+      if (hasSerial) field('quantity').value = 1;
+      var code = labelled ? '' : previewCodes({ category: field('category').value, subcategory: field('subcategory').value,
+        brand: field('brand').value, serial: field('serial').value, quantity: field('quantity').value });
+      $('codePreview').textContent = labelled ? 'ID dari label dipakai apa adanya; yang sudah terdaftar dilewati.'
+        : (code ? 'Kode: ' + code : 'Kode dibuat otomatis dari kategori, sub-kategori, merk dan 4 digit terakhir SN (tanpa SN: nomor urut).');
+    };
+    form.addEventListener('input', update);
+    form.addEventListener('change', update);
+    p.then(function (f) {
       if (!f) return;
-      var ids = f.ids.split(/[\n\r\t,;]+/).map(function (v) { return v.trim(); }).filter(Boolean);
-      if (!ids.length) { toast('Tempelkan minimal satu ID.', true); return; }
-      if (ids.length > 2000) { toast('Maksimal 2.000 ID per proses.', true); return; }
-      confirmDialog('Tambah ' + ids.length + ' ID?', 'ID yang sudah ada akan dilewati.', 'Tambah').then(function (yes) {
-        if (!yes) return;
-        f.ids = ids;
-        api('item.import', f, { batchId: uuid(), loadingText: 'Mendaftarkan ' + ids.length + ' ID...' }).then(function (d) {
-          applySnapshot(d);
-          toast(d.message);
-          if (d.skippedCount) console.info('ID duplikat yang dilewati:', d.skipped);
-        }).catch(function (err) { toast(err.message, true); });
-      });
+      var payload = { category: f.category, subcategory: f.subcategory, brand: f.brand, model: f.model, location: f.location,
+        condition: f.condition, status: f.status, note: f.note };
+      if (f.labelled) payload.ids = f.ids.split(/[\n\r\t,;]+/).map(function (v) { return v.trim(); }).filter(Boolean);
+      else { payload.serial = f.serial; payload.quantity = f.serial ? 1 : Number(f.quantity || 1); }
+      api('item.add', payload, { batchId: uuid(), loadingText: 'Menyimpan aset...' }).then(function (d) {
+        applySnapshot(d);
+        var ids = d.addedIds || [];
+        if (!ids.length) { toast(d.message, true); return; }
+        // the new codes are ticked in Cetak QR, one tap from their labels
+        ids.forEach(function (id) { labelSelected[id] = true; });
+        renderLabels();
+        confirmDialog(d.message, ids.slice(0, 5).join(', ') + (ids.length > 5 ? ' ... ' + ids[ids.length - 1] : '') + '. Cetak labelnya sekarang?', 'Cetak label').then(function (yes) {
+          if (yes) showPage('labels');
+        });
+      }).catch(function (err) { toast(err.message, true); });
     });
   }
 
   function previewContainerId() {
     var type = $('containerType').value;
     var input = $('containerId');
-    if (!type) { input.value = ''; return; }
+    if (!type) { input.placeholder = 'Otomatis, atau isi label fisik'; return; }
     input.placeholder = 'Membuat ID otomatis...';
-    api('container.nextId', { containerType: type }, { silent: true }).then(function (d) {
-      if ($('containerType').value === type && !input.value) input.placeholder = d.cabinetId + ' (otomatis) — atau isi label box fisik';
-    }).catch(function () { input.placeholder = 'Otomatis, atau isi label box fisik'; });
+    api('storage.nextId', { storageType: type }, { silent: true }).then(function (d) {
+      if ($('containerType').value === type && !input.value) input.placeholder = d.storageId + ' (otomatis), atau isi label fisik';
+    }).catch(function () { input.placeholder = 'Otomatis, atau isi label fisik'; });
   }
 
   function submitContainer(e) {
@@ -1317,9 +1418,9 @@
     var form = e.target;
     var f = {};
     new FormData(form).forEach(function (v, k) { f[k] = String(v).trim(); });
-    if (!f.containerType || !f.name) { toast('Pilih jenis wadah dan isi nama.', true); return; }
+    if (!f.storageType || !f.name) { toast('Pilih jenis wadah dan isi nama.', true); return; }
     f.createNew = true;
-    api('container.save', f, { batchId: uuid(), loadingText: 'Menyimpan wadah...' }).then(function (d) {
+    api('storage.save', f, { batchId: uuid(), loadingText: 'Menyimpan wadah...' }).then(function (d) {
       applySnapshot(d);
       form.reset();
       form.classList.add('hidden');

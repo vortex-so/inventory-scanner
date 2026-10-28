@@ -1,8 +1,9 @@
 # Inventory Scanner
 
 Phones scan the QR labels on equipment to check it out, check it back in, record its condition and group
-it into cabinets and boxes. Every scan lands in a Google Sheet. Built for the Neutron LED screen that
-Vortex's media team and KPTJ run; offered to other units later.
+it into storage (pouches, bags, cases, containers). Every scan lands in a Google Sheet. The data model is
+the Vortex Media team's own format for its camera, lens and lighting gear ("Format Inventaris Alat Media",
+Bagas, 26 Okt 2026); the categories live in the sheet, so another unit can use its own.
 
 **Status:** pilot, not yet deployed · **Default branch:** `main` · **Source of truth:** github.com/vortex-so/inventory-scanner · **Build/release:** none; GitHub Pages serves `main`, and the backend is pasted into Apps Script
 
@@ -16,7 +17,7 @@ goes into the same field.
 |---|---|---|
 | Front end | `index.html`, `app.js`, `app.css`, `config.js`, manifest, icons and the Vortex logo | any static host, this repo's Pages |
 | Backend | `apps-script/Code.gs` | pasted into the Apps Script bound to the sheet |
-| Store | one Google Sheet with tabs `Items`, `Containers`, `Transactions`, `Users`, `Carts` | a company Google account |
+| Store | one Google Sheet with tabs `Items`, `Storage`, `Transactions`, `Users`, `Carts`, `Lists` | a company Google account |
 | Libraries | `vendor/` (QR scanning, QR drawing, the Rethink Sans font), pinned, self-hosted | see `vendor/README.md` |
 
 No build step, no CI, no service worker, no npm. Deploy is a push. The sheet is the database, the admin
@@ -24,7 +25,7 @@ panel and the backup (File › Version history).
 
 ## One-time setup
 
-1. **Sheet.** In the company Google account create a blank Google Sheet, name it e.g. `Inventaris LED`.
+1. **Sheet.** In the company Google account create a blank Google Sheet, name it e.g. `Inventaris Alat Media`.
 2. **Script.** In the sheet: Extensions › Apps Script. Replace the contents of `Code.gs` with
    `apps-script/Code.gs` from this repo. Project Settings › tick "Show appsscript.json", replace it with
    `apps-script/appsscript.json`. Save.
@@ -39,11 +40,14 @@ panel and the backup (File › Version history).
    camera gear) is one more line, and the login screen then asks which unit. Commit and push. Enable Pages on the repo
    (GitHub: Settings › Pages › Deploy from branch `main`, folder `/`). Open the Pages URL on a phone,
    log in with name and code, tap Add to Home Screen.
-6. **Items.** Admin › Inventaris › Tambah aset: paste the printed IDs (one per line) with their type and
-   name. Or import from the existing sheet, see below.
+6. **Lists.** setup() fills the `Lists` tab with the media team's categories, sub-categories, storage
+   places (Storage, Drybox) and storage types (Pouch, Tas, Koper, Kontainer), each with its short code.
+   Edit, add or remove rows there; the app reads them at the next login.
+7. **Items.** Admin › Data Inventory › Tambah Aset, one form per item (see "Item codes" below).
 
-After any change to `Code.gs`: paste the new file, then Deploy › Manage deployments › edit › New version.
-The URL stays the same.
+After any change to `Code.gs`: paste the new file, run `setup` once (it adds new columns to tabs that are
+still empty and never rewrites a tab that holds data), then Deploy › Manage deployments › edit › New
+version. The URL stays the same.
 
 ## Everyday use
 
@@ -61,15 +65,24 @@ The URL stays the same.
   about 6-12 cm, closer than iPhones focus; only its decoder is used now (the browser's built-in detector
   where there is one, ZXing in thorough mode on iPhones). Measured with a fake camera: `node test/smoke.mjs`
   checks that a label at 15 % of the frame width is read.
-- **Save.** Simpan opens one sheet with the details (date, location, event, note; or the condition and a
-  damage note for a check) and the confirm. The sheet remembers what you typed if a save is refused, so
-  a retry is one tap.
-- **Boxes.** A container whose ID is the printed box label (e.g. `2-MVG-12-25-NY-BX.001`) is special:
-  scanning that label puts the whole contents in the cart (and the box itself if it is also an item).
-  In the Kelompokkan flow, scan the box first and then the modules going into it.
-- **Rules the server enforces.** Out only from the warehouse, in only when out, a damaged check needs a
-  note, a date and location are required, unknown IDs are refused. A refused save names the offending IDs
-  and the app removes them from the cart so you can save the rest.
+- **Save.** Simpan opens one sheet with Bagas's forms. Date and person in charge are filled in (today, the
+  login). Barang Keluar asks for the destination or event; Barang Masuk shows where the items came from
+  and asks where they go (Storage, Drybox); Pengecekan Kondisi asks for the result (Good, Need
+  Maintenance, Broken, Untested) and the status (Active, Passive). The sheet remembers what you typed if a
+  save is refused, so a retry is one tap.
+- **Item codes.** Tambah Aset makes the code from category code, sub-category code, the first 3 letters of
+  the brand and the last 4 characters of the serial number: Kamera / SONY Camera / Sony / SN ...4567 is
+  `KM-SON-SON-4567`. Without a serial number each unit gets a running number (`CS-CBL-UGR-001`, `-002`, ...),
+  so "Jumlah 6" registers six cables at once. The form shows the code before saving; a code that exists
+  gets `-2`; a removed code is never reused. For labels already printed, tick "Label sudah tercetak" and
+  paste the IDs. After saving, the new codes are ticked in Cetak QR.
+- **Storage.** A pouch, bag, case or container gets an ID (`POU-001`, `KOP-001`, ...) or the label already
+  on it. Scanning that label puts its whole contents in the cart; in the Kelompokkan flow, scan the storage
+  first and then the items going into it.
+- **Rules the server enforces.** Out only when not On Duty and not Passive, in only when On Duty and into a
+  listed place, a check needs a result and a status, Broken and Need Maintenance need a note, unknown IDs
+  are refused. A refused save names the offending IDs and the app removes them from the cart so you can
+  save the rest.
 - **Retries are safe.** Every save carries a batch id; a repeat after a timeout is not written twice.
 - **One cart per login, on every device.** The cart lives in the sheet's `Carts` tab, one row per login.
   Your phone, your second phone and your laptop, logged in with the same name and code, show the same cart:
@@ -85,13 +98,15 @@ The URL stays the same.
   check, so Dashboard and Riwayat show a phone's check-out within seconds.
 - **Look.** The Vortex theme: dark surfaces, the red mark, gold section tags, Rethink Sans headings, taken
   from vortex.so. The logo files are `vortex-logo.png` (lockup, white wordmark) and `vortex-mark.png`.
-- **Rows open a sheet.** Tap an item or a cabinet row and one sheet shows everything you can do with it;
-  the likely action is the white button (Keluar for an item in the warehouse, Masuk for one that is out).
+- **Rows open a sheet.** Tap an item or a storage row and one sheet shows everything you can do with it;
+  the likely action is the white button (Keluar for an item in storage, Masuk for one On Duty; a Passive
+  item cannot go out).
 - **Find by scanning.** The scan button beside the inventory search opens the camera; point at a label
   and its sheet opens. Typing the ID there works too.
-- **Filters are chips.** Semua · Di gudang · Di luar · Rusak · Belum dicek · Tanpa wadah, one tap each.
-- **History is per save.** Dashboard and Riwayat show one row per save ("Keluar · 8 unit · Ballroom Hotel
-  ABC · Wisuda · 23:18 · admin") that expands to its rows. The per-item Riwayat lists that item's rows.
+- **Filters are chips.** Semua · Tersimpan · On Duty · Need Maintenance · Broken · Untested · Passive ·
+  Tanpa wadah, one tap each. Search covers code, brand, type, serial number, storage and destination.
+- **History is per save.** Dashboard and Riwayat show one row per save ("Keluar · 8 unit · Ke Wisuda UGM ·
+  23:18 · admin") that expands to its rows. The per-item Riwayat lists that item's rows.
 - **Long lists render as you scroll.** All items come down in one call (a few hundred rows is ~100 KB);
   the page draws 60 at a time and adds more as you scroll. Search and filters work on the whole set.
 - **Refresh.** Pull down from the top of any page on a phone, tap the refresh icon in the top bar, or just
@@ -110,21 +125,24 @@ The URL stays the same.
 
 | Tab | Columns |
 |---|---|
-| `Items` | id · qr_value · type · name · category · location · status (`DI GUDANG`/`DI LUAR`) · condition (`BAIK`/`RUSAK`/empty) · damage_note · cabinet_id · active · created_at · updated_at · last_checked_at · last_user |
-| `Containers` | cabinet_id · container_type (`KABINET`/`BOX`) · name · category · note · active · created_at · updated_at |
-| `Transactions` | ts · batch_id · action · item_id · item_name · item_type · event_date · location · event_name · cabinet_id · condition · damage_note · note · user |
+| `Items` | id · qr_value · category · subcategory · brand · model · serial · location (a place from Lists, or `On Duty`) · destination (where its last check-out went) · status (`Active`/`Passive`) · condition (`Good`/`Need Maintenance`/`Broken`/`Untested`) · condition_note · note · storage_id · active · created_at · updated_at · last_checked_at · last_user |
+| `Storage` | storage_id · storage_type · name · category · note · active · created_at · updated_at |
+| `Transactions` | ts · batch_id · action · item_id · item_name · category · event_date · from · to · storage_id · condition · status · note · user |
 | `Users` | name · code · role · active |
 | `Carts` | user · rev · data (the login's open carts as JSON) · updated_at — created on first use; clear a row to empty that login's cart |
+| `Lists` | list (`kategori`, `subkategori`, `lokasi`, `wadah`) · value · code · parent (a sub-category's category) |
 
-Transactions is append-only and is the history. Items and Containers hold current state and may be fixed
-by hand in the sheet; the app reads the sheet fresh on every call. `setup()` formats all cells as plain
-text so IDs and codes come back exactly as typed. No price, owner or depreciation columns: this app
-records where a thing is, the asset register lives elsewhere.
+Transactions is append-only and is the history: a check-out reads `from` Storage `to` the event, a check-in
+`from` the event `to` Drybox. Items and Storage hold current state and may be fixed by hand in the sheet;
+the app reads the sheet fresh on every call. `setup()` formats all cells as plain text so IDs and codes
+come back exactly as typed. `active = FALSE` removes an item (Nonaktifkan); `Passive` keeps it in the
+inventory but out of check-outs. No price, owner or depreciation columns: this app records where a thing
+is, the asset register lives elsewhere.
 
-**Migrating from the earlier prototype's sheet.** Export its items as CSV, then either paste the IDs per
-type into Tambah aset, or paste rows straight into `Items` with the columns above (set `active` to `TRUE`,
-`status` to `DI GUDANG` or `DI LUAR`). Containers likewise. Old history can be pasted into `Transactions`
-with the same column order; `batch_id` may be empty.
+**Moving an existing list in.** Paste rows straight into `Items` with the columns above (`active` = `TRUE`,
+`location` a place from Lists, `condition` and `status` from the lists above), or register each item through
+Tambah Aset so it gets a code. A sheet made by the earlier LED-screen version takes the new columns when
+`setup` is run, as long as its tabs are still empty.
 
 ## See the backend work, before any company account exists
 
