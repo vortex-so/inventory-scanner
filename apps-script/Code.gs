@@ -101,7 +101,12 @@ function doPost(e) {
 /** Creates or updates the tabs. Safe to run again: tabs that hold data are never rewritten. */
 function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  // Before 28 Okt 2026 the storage tab was called Containers; an empty one is renamed and reused.
+  // Before 28 Okt 2026 the sheet had the LED-screen columns. Tabs of that version that hold data are kept
+  // under a new name, so nothing is lost and fresh tabs take the media columns. An empty Containers tab
+  // simply becomes Storage. Any other tab with data and other columns still stops setup (see ensureTab).
+  keepLegacyTab(ss, TABS.items, 'cabinet_id');
+  keepLegacyTab(ss, TABS.transactions, 'item_type');
+  keepLegacyTab(ss, 'Containers', 'cabinet_id');
   var old = ss.getSheetByName('Containers');
   if (old && !ss.getSheetByName(TABS.storage) && old.getLastRow() <= 1) old.setName(TABS.storage);
   ensureTab(ss, TABS.items, ITEM_COLS);
@@ -117,6 +122,18 @@ function setup() {
     Logger.log('Admin user created. name=admin code=' + code);
   }
   return 'ok';
+}
+
+/** Renames a tab of the LED-screen version (recognised by one of its old columns) if it holds data. */
+function keepLegacyTab(ss, name, marker) {
+  var sheet = ss.getSheetByName(name);
+  if (!sheet || sheet.getLastRow() < 2) return;
+  var header = sheet.getRange(1, 1, 1, Math.max(1, sheet.getLastColumn())).getValues()[0].map(str);
+  if (header.indexOf(marker) < 0) return;
+  var target = name + ' (LED lama)', n = 2;
+  while (ss.getSheetByName(target)) target = name + ' (LED lama ' + n++ + ')';
+  sheet.setName(target);
+  Logger.log('Tab "' + name + '" berisi data versi lama, disimpan sebagai "' + target + '".');
 }
 
 // ---------- request handling (pure: no HTTP objects, so it can be tested in Node) ----------

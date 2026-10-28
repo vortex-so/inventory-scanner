@@ -39,7 +39,7 @@ test('setup creates the six tabs, seeds the lists and an admin; safe to run agai
   assert.equal(gas.rows('Lists').length, lists, 'lists the team edited are never reseeded');
 });
 
-test('setup moves a sheet from the LED-screen version: empty tabs take the new columns, Containers becomes Storage', () => {
+test('setup moves a sheet from the LED-screen version: empty tabs take the new columns, old data is kept under a new name', () => {
   const gas = createFakeGas();
   const ss = gas.ctx.SpreadsheetApp.getActiveSpreadsheet();
   ss.insertSheet('Items').getRange(1, 1, 1, 4).setValues([['id', 'qr_value', 'type', 'name']]);
@@ -48,10 +48,22 @@ test('setup moves a sheet from the LED-screen version: empty tabs take the new c
   assert.ok(gas.sheets.has('Storage') && !gas.sheets.has('Containers'));
   assert.equal(gas.sheets.get('Storage').data[0][0], 'storage_id');
   assert.equal(gas.sheets.get('Items').data[0][2], 'category');
-  // a tab that holds data with other columns is never rewritten
+  // LED-era tabs that hold data are kept under a new name; fresh tabs take the media columns
   const gas2 = createFakeGas();
-  gas2.ctx.SpreadsheetApp.getActiveSpreadsheet().insertSheet('Items').getRange(1, 1, 2, 2).setValues([['id', 'type'], ['X-1', 'MODUL']]);
-  assert.throws(() => gas2.setup(), /sudah berisi data/);
+  const ss2 = gas2.ctx.SpreadsheetApp.getActiveSpreadsheet();
+  ss2.insertSheet('Items').getRange(1, 1, 2, 3).setValues([['id', 'type', 'cabinet_id'], ['1-MVG-12-25-NY-MD.001', 'MODUL', 'BOX-001']]);
+  ss2.insertSheet('Transactions').getRange(1, 1, 2, 3).setValues([['ts', 'action', 'item_type'], ['2026-10-22 14:19:03', 'IMPORT', 'MODUL']]);
+  ss2.insertSheet('Containers').getRange(1, 1, 2, 2).setValues([['cabinet_id', 'container_type'], ['BOX-001', 'BOX']]);
+  gas2.setup();
+  assert.equal(gas2.sheets.get('Items (LED lama)').data[1][0], '1-MVG-12-25-NY-MD.001', 'old items kept');
+  assert.equal(gas2.sheets.get('Transactions (LED lama)').data[1][1], 'IMPORT', 'old history kept');
+  assert.equal(gas2.sheets.get('Containers (LED lama)').data[1][0], 'BOX-001', 'old containers kept');
+  assert.equal(gas2.sheets.get('Items').data[0][2], 'category', 'a fresh Items tab with the new columns');
+  assert.equal(gas2.rows('Items').length, 0);
+  // any other tab that holds data with other columns is never rewritten
+  const gas3 = createFakeGas();
+  gas3.ctx.SpreadsheetApp.getActiveSpreadsheet().insertSheet('Items').getRange(1, 1, 2, 2).setValues([['id', 'merk_lain'], ['X-1', 'Y']]);
+  assert.throws(() => gas3.setup(), /sudah berisi data/);
 });
 
 test('login: wrong code fails, lockout after ten failures, operator cannot add items', () => {
