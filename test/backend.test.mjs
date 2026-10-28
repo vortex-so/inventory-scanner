@@ -106,10 +106,12 @@ test('item codes: category-subcategory-brand-last 4 of SN, or a running number p
   assert.deepEqual(ok('item.add', { ...CAM, serial: 'XY9994567' }).addedIds, ['KM-SON-SON-4567-2'], 'same last four: a suffix keeps it unique');
   assert.deepEqual(ok('item.add', { ...CABLE, quantity: 3 }).addedIds, ['CS-CBL-UGR-001', 'CS-CBL-UGR-002', 'CS-CBL-UGR-003']);
   assert.deepEqual(ok('item.add', { ...CABLE }).addedIds, ['CS-CBL-UGR-004'], 'the running number continues');
+  assert.deepEqual(ok('item.add', { ...CABLE, serial: 'CBC0218' }).addedIds, ['CS-CBL-UGR-0218']);
+  assert.deepEqual(ok('item.add', { ...CABLE }).addedIds, ['CS-CBL-UGR-005'], 'an SN ending of four digits is not a running number');
   assert.deepEqual(ok('item.add', { category: 'Lighting', subcategory: 'Godox', brand: 'LG', model: 'Panel' }).addedIds, ['LG-GDX-LGX-001'], 'a short brand is padded');
   const lab = ok('item.add', { ...CAM, ids: 'OLD-1\nOLD-2\nOLD-1\nKM-SON-SON-4567' });
   assert.deepEqual([lab.addedCount, lab.skippedCount], [2, 2], 'labels already printed: used as they are, duplicates skipped');
-  assert.equal(gas.rows('Transactions').length, 9, 'one IMPORT row per unit: 1 + 1 + 3 + 1 + 1 + 2');
+  assert.equal(gas.rows('Transactions').length, 11, 'one IMPORT row per unit: 1 + 1 + 3 + 1 + 1 + 1 + 1 + 2');
   assert.equal(gas.rows('Transactions')[0][2], 'IMPORT');
   assert.match(fail('item.add', { ...CAM, subcategory: 'E Mount' }).error, /sub-kategori/);
   assert.match(fail('item.add', { ...CAM, category: 'Drone' }).error, /kategori/);

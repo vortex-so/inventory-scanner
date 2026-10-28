@@ -832,7 +832,11 @@ function shortCode(text, n) {
   return s.slice(0, n);
 }
 
-/** prefix-SN4 for a serial (a -2, -3 ... suffix if that code exists), else prefix-001, -002 ... after the highest. */
+/**
+ * prefix-SN4 for a serial (a -2, -3 ... suffix if that code exists), else prefix-001, -002 ... after the highest
+ * three-digit number. Only three digits count: an SN ending such as -0218 is four characters and is not a running
+ * number. Past 999 the numbers grow to four digits and simply skip any code already taken.
+ */
 function makeItemIds(rows, prefix, serial, quantity) {
   var taken = {};
   rows.forEach(function (r) { if (r.id) taken[r.id.toUpperCase()] = true; });
@@ -843,13 +847,13 @@ function makeItemIds(rows, prefix, serial, quantity) {
     while (taken[id]) id = base + '-' + n++;
     return [id];
   }
-  var max = 0, re = new RegExp('^' + prefix.replace(/[-]/g, '\\-') + '-(\\d{3,})$');
+  var max = 0, re = new RegExp('^' + prefix.replace(/[-]/g, '\\-') + '-(\\d{3})$');
   Object.keys(taken).forEach(function (id) { var m = re.exec(id); if (m) max = Math.max(max, Number(m[1])); });
   var ids = [];
-  for (var i = 1; i <= quantity; i++) {
-    var num = String(max + i);
+  while (ids.length < quantity) {
+    var num = String(++max);
     while (num.length < 3) num = '0' + num;
-    ids.push(prefix + '-' + num);
+    if (!taken[prefix + '-' + num]) ids.push(prefix + '-' + num);
   }
   return ids;
 }

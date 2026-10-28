@@ -1340,7 +1340,8 @@
     var prefix = [cat.code || shortCode(cat.value, 2), sub.code || shortCode(sub.value, 3), shortCode(f.brand, 3)].join('-');
     var tail = String(f.serial || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(-4);
     if (tail) return prefix + '-' + tail;
-    var max = 0, re = new RegExp('^' + prefix.replace(/-/g, '\\-') + '-(\\d{3,})$');
+    // only three-digit endings are running numbers; an SN ending such as -0218 is not
+    var max = 0, re = new RegExp('^' + prefix.replace(/-/g, '\\-') + '-(\\d{3})$');
     state.items.forEach(function (x) { var m = re.exec(x.id.toUpperCase()); if (m) max = Math.max(max, Number(m[1])); });
     var pad = function (n) { n = String(n); while (n.length < 3) n = '0' + n; return n; };
     var qty = Math.max(1, Math.min(200, Math.floor(Number(f.quantity) || 1)));
