@@ -33,12 +33,16 @@ class Range {
     }
     return this;
   }
+  setBackgrounds(colours) {
+    for (let i = 0; i < this.nr; i++) (this.sheet.bg[this.r - 1 + i] = this.sheet.bg[this.r - 1 + i] || [])[this.c - 1] = colours[i][0];
+    return this;
+  }
   setNumberFormat() { return this; }
   setFontWeight() { return this; }
 }
 
 class Sheet {
-  constructor(name, sheets) { this.name = name; this.data = []; this.sheets = sheets; }
+  constructor(name, sheets) { this.name = name; this.data = []; this.bg = []; this.sheets = sheets; }
   setName(n) { this.sheets.delete(this.name); this.name = n; this.sheets.set(n, this); return this; }
   getName() { return this.name; }
   getLastRow() {

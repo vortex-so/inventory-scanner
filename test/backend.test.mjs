@@ -27,9 +27,9 @@ function boot() {
   return { gas, code, call, ok, fail, cables };
 }
 
-test('setup creates the six tabs, seeds the lists and an admin; safe to run again', () => {
+test('setup creates the seven tabs, seeds the lists and an admin; safe to run again', () => {
   const { gas, code } = boot();
-  assert.deepEqual([...gas.sheets.keys()], ['Items', 'Storage', 'Transactions', 'Carts', 'Lists', 'Users']);
+  assert.deepEqual([...gas.sheets.keys()], ['Items', 'Storage', 'Transactions', 'Carts', 'Lists', 'Users', 'Impor']);
   assert.match(code, /^\d{6}$/);
   assert.equal(gas.sheets.get('Items').data[0][0], 'id');
   const lists = gas.rows('Lists').length;
@@ -117,6 +117,55 @@ test('item codes: category-subcategory-brand-last 4 of SN, or a running number p
   assert.match(fail('item.add', { ...CAM, model: '' }).error, /Type/);
   assert.match(fail('item.add', { ...CABLE, quantity: 500 }).error, /Jumlah/);
   assert.match(fail('item.add', { ...CAM, location: 'Gudang' }).error, /lokasi/);
+});
+
+test('Impor tab: a check marks codes without adding, the import adds what passed, never twice', () => {
+  const { gas, ok } = boot();
+  ok('item.add', { ...CAM, serial: '5075230' });  // already registered: KM-SON-SON-5230
+  const COLS = ['baris_lama', 'category', 'subcategory', 'brand', 'model', 'serial', 'location', 'condition',
+    'condition_note', 'status', 'note', 'cek', 'kode', 'hasil'];
+  const row = o => COLS.map(c => o[c] || '');
+  const SD = { category: 'Camera Support & Accessories', subcategory: 'Memory', brand: 'Lexar', model: '800x 32GB', condition: 'Good' };
+  const rows = [
+    row({ baris_lama: '164', ...SD, note: 'Kode lama: F1' }),
+    row({ baris_lama: '164', ...SD, note: 'Kode lama: F2', cek: 'dibawa GFA atau BIP?' }),
+    row({ baris_lama: '164', ...SD, note: 'Kode lama: F3' }),
+    row({ baris_lama: '109', category: 'Kamera', subcategory: 'SONY Camera', brand: 'Sony', model: 'A7Cii', serial: '3150972', location: 'Drybox' }),
+    row({ baris_lama: '110', category: 'Kamera', subcategory: 'SONY Camera', brand: 'Sony', model: 'A6500', serial: '5075230' }),
+    row({ baris_lama: '77', category: 'Camera Support & Accessories', subcategory: 'Battery & Charger', brand: 'Baseus', model: 'Powerbank', condition: 'Broken' }),
+    row({ baris_lama: '2', category: 'Multimedia & Lainnya', subcategory: 'Audio', brand: 'Sony', model: 'ECM-B10', serial: '572736350' }),
+    row({ baris_lama: '178', category: 'Multimedia & Lainnya', brand: 'Wanbo', model: 'T6 Max' })
+  ];
+  const imp = gas.sheets.get('Impor');
+  imp.getRange(2, 1, rows.length, COLS.length).setValues(rows);
+  const kode = () => gas.rows('Impor').map(r => r[12]);
+  const hasil = () => gas.rows('Impor').map(r => r[13]);
+
+  assert.equal(gas.ctx.checkImport(), '4 siap, 1 menunggu cek, 3 belum bisa. Belum ada yang dimasukkan.');
+  assert.equal(gas.rows('Items').length, 1, 'a check adds nothing');
+  assert.deepEqual(kode(), ['', '', '', '', '', '', '', '']);
+  assert.deepEqual(hasil().map(h => h.replace(/:.*/, '')), ['Siap, kode nanti CS-MEM-LEX-001', 'Menunggu cek', 'Siap, kode nanti CS-MEM-LEX-002',
+    'Siap, kode nanti KM-SON-SON-0972', 'Belum bisa', 'Belum bisa', 'Siap, kode nanti ML-AUD-SON-6350', 'Belum bisa']);
+  assert.match(hasil()[4], /sudah terdaftar sebagai KM-SON-SON-5230/);
+  assert.match(hasil()[5], /condition_note/);
+  assert.match(hasil()[7], /sub-kategori/);
+  assert.equal(imp.bg[2][0], '#fff2cc', 'a row waiting for a person is yellow');
+  assert.equal(imp.bg[5][0], '#f4cccc', 'a row that cannot go in is red');
+
+  assert.equal(gas.ctx.runImport(), '4 aset masuk, 1 menunggu cek, 3 belum bisa.');
+  assert.deepEqual(kode(), ['CS-MEM-LEX-001', '', 'CS-MEM-LEX-002', 'KM-SON-SON-0972', '', '', 'ML-AUD-SON-6350', '']);
+  const added = gas.rows('Items').find(r => r[0] === 'KM-SON-SON-0972');
+  assert.deepEqual([added[7], added[12], added[18]], ['Drybox', '', 'Impor']);
+  assert.match(gas.rows('Transactions').at(-1)[12], /Impor dari baris 2/);
+  assert.equal(imp.bg[1][0], '#d9ead3', 'an added row is green');
+
+  // the person clears cek, fixes the broken one; a second run adds only those
+  imp.getRange(3, 12).setValues([['']]);
+  imp.getRange(7, 9).setValues([['tidak bisa mengisi']]);
+  assert.equal(gas.ctx.runImport(), '2 aset masuk, 0 menunggu cek, 2 belum bisa.');
+  assert.deepEqual(kode().slice(0, 6), ['CS-MEM-LEX-001', 'CS-MEM-LEX-003', 'CS-MEM-LEX-002', 'KM-SON-SON-0972', '', 'CS-BAT-BAS-001']);
+  assert.equal(gas.rows('Items').length, 7, '1 before + 4 + 2, nothing twice');
+  assert.equal(gas.rows('Items').find(r => r[0] === 'CS-BAT-BAS-001')[11], 'tidak bisa mengisi');
 });
 
 test('check-out, check-in and condition check follow Bagas\'s forms', () => {

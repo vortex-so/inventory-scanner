@@ -17,7 +17,7 @@ goes into the same field.
 |---|---|---|
 | Front end | `index.html`, `app.js`, `app.css`, `config.js`, manifest, icons and the Vortex logo | any static host, this repo's Pages |
 | Backend | `apps-script/Code.gs` | pasted into the Apps Script bound to the sheet |
-| Store | one Google Sheet with tabs `Items`, `Storage`, `Transactions`, `Users`, `Carts`, `Lists` | a company Google account |
+| Store | one Google Sheet with tabs `Items`, `Storage`, `Transactions`, `Users`, `Carts`, `Lists`, `Impor` | a company Google account |
 | Libraries | `vendor/` (QR scanning, QR drawing, the Rethink Sans font), pinned, self-hosted | see `vendor/README.md` |
 
 No build step, no CI, no service worker, no npm. Deploy is a push. The sheet is the database, the admin
@@ -131,6 +131,7 @@ version. The URL stays the same.
 | `Users` | name · code · role · active |
 | `Carts` | user · rev · data (the login's open carts as JSON) · updated_at — created on first use; clear a row to empty that login's cart |
 | `Lists` | list (`kategori`, `subkategori`, `lokasi`, `wadah`) · value · code · parent (a sub-category's category) |
+| `Impor` | baris_lama · category · subcategory · brand · model · serial · location · condition · condition_note · status · note · cek · kode · hasil — rows waiting to be added in bulk |
 
 Transactions is append-only and is the history: a check-out reads `from` Storage `to` the event, a check-in
 `from` the event `to` Drybox. Items and Storage hold current state and may be fixed by hand in the sheet;
@@ -139,10 +140,19 @@ come back exactly as typed. `active = FALSE` removes an item (Nonaktifkan); `Pas
 inventory but out of check-outs. No price, owner or depreciation columns: this app records where a thing
 is, the asset register lives elsewhere.
 
-**Moving an existing list in.** Paste rows straight into `Items` with the columns above (`active` = `TRUE`,
-`location` a place from Lists, `condition` and `status` from the lists above), or register each item through
-Tambah Aset so it gets a code. A sheet made by the earlier LED-screen version takes the new columns when
-`setup` is run, as long as its tabs are still empty.
+**Moving an existing list in.** Paste one row per unit into `Impor` (columns `baris_lama` to `cek`; leave
+`kode` and `hasil` empty). The sheet's **Inventaris** menu then has two items:
+- *Cek tab Impor* writes in `hasil` the code each row will get, or why it cannot go in yet, and colours the
+  row: white ready, yellow waiting (its `cek` cell holds a question for a person; clear it once answered),
+  red not possible yet (an unknown category, a missing brand, a broken item without `condition_note`, an SN
+  already registered). It adds nothing.
+- *Impor ke Items* adds every white row, with the same checks and codes as Tambah Aset, writes its code in
+  `kode` and turns it green. A row with a `kode` is done and is never added again, so fix the rest and run
+  it again as often as needed.
+
+The menu runs as whoever clicks it, so only people with edit access to the sheet can use it. A sheet made
+by the earlier LED-screen version takes the new columns when `setup` is run; tabs of that version that
+hold data are kept as "… (LED lama)".
 
 ## See the backend work, before any company account exists
 

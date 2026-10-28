@@ -5,9 +5,9 @@
 window.APP_CONFIG = {
   appName: 'Vortex Inventory',
   units: [
-    // Test sheet "Vortex Inventory Test" in abriele@vortex.so's My Drive, deployed 22 Okt 2026. Replace with the real sheet when Bagas's data moves in.
-    { key: 'test', name: 'Vortex Inventory (uji)', apiUrl: 'https://script.google.com/macros/s/AKfycbzlqhRurr5kBUQakk8-w378CIk8vKstxq-TCR3-f7WnIHLOo2copWyv3YJ8H0UZ0kJm/exec' },
-    // { key: 'media', name: 'Vortex Media', apiUrl: 'https://script.google.com/macros/s/XXXXXXXX/exec' },
+    // Bagas's sheet "Database Inventory Vortex Media" (owner produksions@gmail.com), script deployed by
+    // abriele@vortex.so on 28 Okt 2026. The test sheet "Vortex Inventory Test" is no longer listed.
+    { key: 'media', name: 'Vortex Media', apiUrl: 'https://script.google.com/macros/s/AKfycbxBcRb5ZOhYw4dpGHbBYR5EucApUBKC5jDi98oivnyZNlsVan9CXUjD9wQ-YtQcxp1w0g/exec' },
     // { key: 'kptj',  name: 'KPTJ',         apiUrl: 'https://script.google.com/macros/s/YYYYYYYY/exec' }
   ]
 };

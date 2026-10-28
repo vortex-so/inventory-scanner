@@ -2,8 +2,9 @@
 /**
  * Inventory Scanner, Apps Script backend.
  *
- * One Google Sheet with six tabs: Items, Storage, Transactions, Users, Carts (open carts per login) and
- * Lists (categories, sub-categories, storage places and storage types, which the team edits itself).
+ * One Google Sheet with seven tabs: Items, Storage, Transactions, Users, Carts (open carts per login),
+ * Lists (categories, sub-categories, storage places and storage types, which the team edits itself) and
+ * Impor (rows pasted from an old list, added in bulk from the sheet's Inventaris menu).
  * The sheet is the database, the admin panel and the backup (version history).
  * This script is its only gatekeeper: it checks the access code, enforces the movement rules, creates the
  * item codes, serialises writes with a lock and appends the log.
@@ -18,7 +19,8 @@
 var VERSION = '2026-10-28';
 var TZ = 'Asia/Jakarta';
 
-var TABS = { items: 'Items', storage: 'Storage', transactions: 'Transactions', users: 'Users', carts: 'Carts', lists: 'Lists' };
+var TABS = { items: 'Items', storage: 'Storage', transactions: 'Transactions', users: 'Users', carts: 'Carts', lists: 'Lists',
+  imports: 'Impor' };
 
 // One row per unit. location is a storage place (Storage, Drybox, ...) or On Duty while it is out; destination
 // is where its last check-out went; status is Active or Passive; active = FALSE means removed from the inventory.
@@ -33,6 +35,10 @@ var CART_COLS = ['user', 'rev', 'data', 'updated_at'];
 // One row per choice. list is kategori, subkategori, lokasi or wadah; code is the short code used in item and
 // storage IDs; parent ties a sub-category to its category. Add or rename rows here; the app reads them at login.
 var LIST_COLS = ['list', 'value', 'code', 'parent'];
+// One row per unit to add. cek holds a question for a person: the row waits until it is cleared. kode and hasil
+// are written by the import; a row with a kode is done and never added twice.
+var IMPORT_COLS = ['baris_lama', 'category', 'subcategory', 'brand', 'model', 'serial', 'location', 'condition',
+  'condition_note', 'status', 'note', 'cek', 'kode', 'hasil'];
 
 var ON_DUTY = 'On Duty';
 var CONDITIONS = ['Good', 'Need Maintenance', 'Broken', 'Untested'];
@@ -65,6 +71,7 @@ var DEFAULT_LISTS = [
   ['subkategori', 'Slider', 'SLD', 'Camera Support & Accessories'],
   ['subkategori', 'Tripod & Monopod', 'TRP', 'Camera Support & Accessories'],
   ['subkategori', 'Switcher & Recorder', 'SWR', 'Multimedia & Lainnya'],
+  ['subkategori', 'Audio', 'AUD', 'Multimedia & Lainnya'],
   ['lokasi', 'Storage', '', ''], ['lokasi', 'Drybox', '', ''],
   ['wadah', 'Pouch', 'POU', ''], ['wadah', 'Tas', 'TAS', ''], ['wadah', 'Koper', 'KOP', ''], ['wadah', 'Kontainer', 'KON', '']
 ];
@@ -121,6 +128,7 @@ function setup() {
     users.getRange(2, 1, 1, USER_COLS.length).setValues([['admin', code, 'admin', 'TRUE']]);
     Logger.log('Admin user created. name=admin code=' + code);
   }
+  ensureTab(ss, TABS.imports, IMPORT_COLS);
   return 'ok';
 }
 
@@ -334,21 +342,7 @@ function hCommit(ss, payload, user, batchId) {
  * of quantity). With ids (labels already printed) those IDs are used as they are.
  */
 function hItemAdd(ss, payload, user, batchId) {
-  var lists = readLists(ss);
-  var category = pickValue(lists.categories, payload.category);
-  if (!category) throw new AppError('Pilih kategori.');
-  var sub = pickValue(lists.subcategories.filter(function (s) { return !s.parent || s.parent === category.value; }), payload.subcategory);
-  if (!sub) throw new AppError('Pilih sub-kategori dari kategori ' + category.value + '.');
-  var brand = str(payload.brand), model = str(payload.model), serial = str(payload.serial);
-  if (!brand) throw new AppError('Merk wajib diisi.');
-  if (!model) throw new AppError('Type wajib diisi.');
-  var location = payload.location ? pick(lists.places.concat([ON_DUTY]), payload.location) : lists.places[0];
-  if (!location) throw new AppError('Pilih lokasi: ' + lists.places.concat([ON_DUTY]).join(', ') + '.');
-  var condition = payload.condition ? pick(CONDITIONS, payload.condition) : 'Untested';
-  if (!condition) throw new AppError('Kondisi tidak dikenal.');
-  var status = payload.status ? pick(STATUSES, payload.status) : 'Active';
-  if (!status) throw new AppError('Status harus Active atau Passive.');
-
+  var v = itemFields(readLists(ss), payload);
   var table = readTable(ss, TABS.items, ITEM_COLS);
   var byId = indexItems(table.rows);
   var given = splitIds(payload.ids), ids = [], skipped = [];
@@ -362,20 +356,17 @@ function hItemAdd(ss, payload, user, batchId) {
       ids.push(id);
     });
   } else {
-    var quantity = serial ? 1 : Math.floor(Number(payload.quantity || 1));
+    var quantity = v.serial ? 1 : Math.floor(Number(payload.quantity || 1));
     if (!(quantity >= 1 && quantity <= MAX_QUANTITY)) throw new AppError('Jumlah 1 sampai ' + MAX_QUANTITY + '.');
-    ids = makeItemIds(table.rows, [category.code || shortCode(category.value, 2), sub.code || shortCode(sub.value, 3), shortCode(brand, 3)].join('-'), serial, quantity);
+    ids = makeItemIds(table.rows, v.prefix, v.serial, quantity);
   }
 
   var now = nowStr(), txns = [];
   ids.forEach(function (id) {
-    var item = { id: id, qr_value: id, category: category.value, subcategory: sub.value, brand: brand, model: model,
-      serial: serial, location: location, destination: '', status: status, condition: condition, condition_note: '',
-      note: str(payload.note), storage_id: '', active: 'TRUE', created_at: now, updated_at: now,
-      last_checked_at: '', last_user: user.name };
+    var item = newItem(v, id, now, user);
     byId[id.toLowerCase()] = item;
     table.rows.push(item);
-    txns.push(txnRow(now, batchId, 'IMPORT', item, { to: location, condition: condition, status: status, note: 'Didaftarkan' }, user));
+    txns.push(txnRow(now, batchId, 'IMPORT', item, { to: item.location, condition: item.condition, status: item.status, note: 'Didaftarkan' }, user));
   });
   if (ids.length) {
     writeTable(table, ITEM_COLS);
@@ -387,6 +378,115 @@ function hItemAdd(ss, payload, user, batchId) {
   snap.skippedCount = skipped.length;
   snap.skipped = skipped.slice(0, 100);
   return snap;
+}
+
+/** The checks of Tambah Aset, shared with the Impor tab. Returns the cleaned fields and the code prefix, or throws. */
+function itemFields(lists, f) {
+  var category = pickValue(lists.categories, f.category);
+  if (!category) throw new AppError('Pilih kategori.');
+  var sub = pickValue(lists.subcategories.filter(function (s) { return !s.parent || s.parent === category.value; }), f.subcategory);
+  if (!sub) throw new AppError('Pilih sub-kategori dari kategori ' + category.value + '.');
+  var brand = str(f.brand), model = str(f.model);
+  if (!brand) throw new AppError('Merk wajib diisi.');
+  if (!model) throw new AppError('Type wajib diisi.');
+  var location = f.location ? pick(lists.places.concat([ON_DUTY]), f.location) : lists.places[0];
+  if (!location) throw new AppError('Pilih lokasi: ' + lists.places.concat([ON_DUTY]).join(', ') + '.');
+  var condition = f.condition ? pick(CONDITIONS, f.condition) : 'Untested';
+  if (!condition) throw new AppError('Kondisi tidak dikenal.');
+  var status = f.status ? pick(STATUSES, f.status) : 'Active';
+  if (!status) throw new AppError('Status harus Active atau Passive.');
+  return { category: category.value, subcategory: sub.value, brand: brand, model: model, serial: str(f.serial),
+    location: location, condition: condition, conditionNote: str(f.condition_note), status: status, note: str(f.note),
+    prefix: [category.code || shortCode(category.value, 2), sub.code || shortCode(sub.value, 3), shortCode(brand, 3)].join('-') };
+}
+
+function newItem(v, id, now, user) {
+  return { id: id, qr_value: id, category: v.category, subcategory: v.subcategory, brand: v.brand, model: v.model,
+    serial: v.serial, location: v.location, destination: '', status: v.status, condition: v.condition,
+    condition_note: v.conditionNote, note: v.note, storage_id: '', active: 'TRUE', created_at: now, updated_at: now,
+    last_checked_at: '', last_user: user.name };
+}
+
+// ---------- Impor tab: an old list added in bulk, from the sheet itself ----------
+
+/** Adds the Inventaris menu to the sheet. Its items run as whoever clicks them, so no access code is needed. */
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Inventaris')
+    .addItem('Cek tab Impor', 'checkImport')
+    .addItem('Impor ke Items', 'runImport')
+    .addToUi();
+}
+
+/** Marks every waiting Impor row with the code it will get, or why it cannot go in yet. Adds nothing. */
+function checkImport() { return importReport(importRows(SpreadsheetApp.getActiveSpreadsheet(), false)); }
+
+/** Adds the Impor rows that pass the checks and have an empty cek; writes each one's code back. */
+function runImport() {
+  return importReport(withLock(function () { return importRows(SpreadsheetApp.getActiveSpreadsheet(), true); }));
+}
+
+function importReport(message) {
+  Logger.log(message);
+  try { SpreadsheetApp.getActiveSpreadsheet().toast(message, 'Impor', 15); } catch (e) { /* run from the editor */ }
+  return message;
+}
+
+var IMPORT_COLOURS = { done: '#d9ead3', waiting: '#fff2cc', error: '#f4cccc', ready: '#ffffff' };
+
+function importRows(ss, commit) {
+  var lists = readLists(ss);
+  var imp = readTable(ss, TABS.imports, IMPORT_COLS);
+  var items = readTable(ss, TABS.items, ITEM_COLS);
+  var serials = {};
+  items.rows.forEach(function (r) { if (isTrue(r.active) && r.serial) serials[r.serial.toUpperCase()] = r.id; });
+  var now = nowStr(), user = { name: 'Impor' }, batchId = commit ? Utilities.getUuid() : '', txns = [];
+  var count = { added: 0, ready: 0, waiting: 0, error: 0, done: 0 };
+  var marks = {};  // sheet row -> [kode, hasil, state]
+  imp.rows.forEach(function (r) {
+    if (r.kode) { count.done++; marks[r._row] = [r.kode, r.hasil, 'done']; return; }
+    var v;
+    try {
+      v = itemFields(lists, r);
+      if (NEEDS_NOTE[v.condition] && !v.conditionNote) throw new AppError('Kondisi ' + v.condition + ' perlu condition_note.');
+      if (v.serial && serials[v.serial.toUpperCase()]) throw new AppError('SN ini sudah terdaftar sebagai ' + serials[v.serial.toUpperCase()] + '.');
+    } catch (e) {
+      count.error++;
+      marks[r._row] = ['', 'Belum bisa: ' + e.message, 'error'];
+      return;
+    }
+    if (r.cek) { count.waiting++; marks[r._row] = ['', 'Menunggu cek: kosongkan kolom cek kalau sudah benar.', 'waiting']; return; }
+    // Codes are reserved in sheet order, so the preview matches what the import will write.
+    var id = makeItemIds(items.rows, v.prefix, v.serial, 1)[0];
+    var item = newItem(v, id, now, user);
+    items.rows.push(item);
+    if (v.serial) serials[v.serial.toUpperCase()] = id;
+    if (!commit) { count.ready++; marks[r._row] = ['', 'Siap, kode nanti ' + id, 'ready']; return; }
+    txns.push(txnRow(now, batchId, 'IMPORT', item, { to: item.location, condition: item.condition, status: item.status,
+      note: 'Impor' + (r.baris_lama ? ' dari baris ' + r.baris_lama : '') }, user));
+    count.added++;
+    marks[r._row] = [id, 'Masuk ' + now, 'done'];
+  });
+  if (commit && count.added) {
+    writeTable(items, ITEM_COLS);
+    appendRows(ss, TABS.transactions, TXN_COLS, txns);
+  }
+  var last = imp.sheet.getLastRow();
+  if (last >= 2) {
+    var kodeCol = IMPORT_COLS.indexOf('kode') + 1;
+    var out = imp.sheet.getRange(2, kodeCol, last - 1, 2).getValues();
+    var colours = [];
+    for (var row = 2; row <= last; row++) {
+      var m = marks[row];
+      if (m) out[row - 2] = [m[0], m[1]];
+      var colour = m ? IMPORT_COLOURS[m[2]] : IMPORT_COLOURS.ready;
+      colours.push(IMPORT_COLS.map(function () { return colour; }));
+    }
+    imp.sheet.getRange(2, kodeCol, last - 1, 2).setValues(out);
+    imp.sheet.getRange(2, 1, last - 1, IMPORT_COLS.length).setBackgrounds(colours);
+  }
+  return commit
+    ? count.added + ' aset masuk, ' + count.waiting + ' menunggu cek, ' + count.error + ' belum bisa.'
+    : count.ready + ' siap, ' + count.waiting + ' menunggu cek, ' + count.error + ' belum bisa. Belum ada yang dimasukkan.';
 }
 
 function hItemUpdate(ss, payload, user, batchId) {
